@@ -141,7 +141,10 @@ def handle_inbound(from_phone: str, body: str, name: str = "") -> str:
     price_keywords = ["price list", "pricelist", "price sheet", "full list", "catalog",
                       "catalogue", "all products", "all prices", "send prices", "full catalog"]
     if any(kw in body.lower() for kw in price_keywords):
-        _send_price_list(from_phone)
+        try:
+            _send_price_list(from_phone)
+        except Exception as e:
+            print(f"[MessagingAgent] _send_price_list crashed: {e!r}")
         conversation.append({"role": "assistant", "content": "[Price list sent]"})
         save_conversation(from_phone, conversation)
         return ""  # REST API handled the send; return empty TwiML
@@ -284,58 +287,41 @@ def _parse_json(text: str) -> dict:
 
 # ── Twilio helpers ─────────────────────────────────────────────────────────────
 
-PRICE_LIST_XLSX_URL = "https://peptide-agents-production.up.railway.app/price-list.xlsx"
+# Public Railway URL — serves the bilingual XLSX price list as a downloadable file
+_BASE_URL = "https://peptide-agents-production.up.railway.app"
+PRICE_LIST_XLSX_URL = f"{_BASE_URL}/price-list.xlsx"
 
 
 def _send_price_list(to: str) -> None:
-    """Send the bilingual XLSX price list via Twilio REST API."""
+    """
+    Send the bilingual XLSX price list as a WhatsApp document attachment.
+    Twilio fetches the file from our Railway URL and delivers it as a
+    downloadable spreadsheet — recipients open it in Excel / Numbers / Sheets.
+    Falls back to text if the attachment fails.
+    """
     from_number = settings.twilio_whatsapp_from if "whatsapp" in to else settings.twilio_phone_number
-    print(f"[PriceList] to={to!r} from={from_number!r} url={PRICE_LIST_XLSX_URL}")
+    print(f"[PriceList] Sending XLSX to {to!r} from {from_number!r} — {PRICE_LIST_XLSX_URL}")
     try:
         msg = twilio_client.messages.create(
-            body="Here's our current price list — all prices per kit (10 vials). Reply with any product name to get a quote.",
+            body="Here's our full price list — all prices are per kit (10 vials). Open the file, then reply with any product name and quantity to get a quote.",
             from_=from_number,
             to=to,
             media_url=[PRICE_LIST_XLSX_URL],
         )
         print(f"[PriceList] Sent OK: SID={msg.sid} status={msg.status}")
     except Exception as e:
-        print(f"[PriceList] FAILED: {e!r}")
-        # Text fallback
-        fallback_msgs = get_price_list_messages()
-        for m in fallback_msgs:
-            try:
-                twilio_client.messages.create(body=m, from_=from_number, to=to)
-            except Exception as e2:
-                print(f"[PriceList] Text fallback also failed: {e2!r}")
+        print(f"[PriceList] XLSX send failed: {e!r} — sending text fallback")
+        _send_text_price_list(from_number, to)
 
 
-def _get_base_url() -> str:
-    """Return the public base URL for serving media."""
-    import os
-    # Railway's reverse proxy sets X-Forwarded-Proto and passes the real Host header
-    try:
-        from flask import request
-        scheme = request.headers.get("X-Forwarded-Proto", "https")
-        host = request.headers.get("X-Forwarded-Host") or request.host
-        if host and not host.startswith("0.0.0.0") and not host.startswith("127."):
-            return f"{scheme}://{host}"
-    except Exception:
-        pass
-    # Explicit env var override
-    railway_url = getattr(settings, "railway_public_url", "").rstrip("/")
-    if railway_url:
-        return railway_url
-    domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
-    if domain:
-        return f"https://{domain}"
-    # Local ngrok fallback
-    try:
-        import requests as req
-        data = req.get("http://localhost:4040/api/tunnels", timeout=2).json()
-        return data["tunnels"][0]["public_url"].rstrip("/")
-    except Exception:
-        return ""
+def _send_text_price_list(from_number: str, to: str) -> None:
+    """Last-resort fallback: send price list as plain-text messages."""
+    fallback_msgs = get_price_list_messages()
+    for m in fallback_msgs:
+        try:
+            twilio_client.messages.create(body=m, from_=from_number, to=to)
+        except Exception as e2:
+            print(f"[PriceList] Text fallback also failed: {e2!r}")
 
 
 def send_sms(to: str, body: str):
