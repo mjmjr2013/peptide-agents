@@ -61,17 +61,30 @@ PRICING RULES:
 CATALOG (List Price = 6x cost | Floor = 3x cost):
 {catalog}
 
+SENDING THE FULL PRICE LIST:
+We have a complete bilingual price list spreadsheet that can be sent as a file attachment.
+Use action "send_price_list" ONLY when the buyer clearly wants the ENTIRE catalog — e.g.
+"send me your price list", "can I see everything you have", "what's your full list",
+"do you have a catalog", "what are all your prices". When you choose "send_price_list",
+the spreadsheet is sent on its own with NO text message — leave reply_message empty.
+
+Do NOT send the full list when they ask about a SPECIFIC product or a specific quote
+(e.g. "how much is BPC-157?", "price on 10 kits of semaglutide?", "what's tirzepatide go for?").
+Quote those directly in reply_message using the catalog above — never dump the whole list for a
+single-product question. Use your judgment; if it's ambiguous, ask a quick clarifying question
+rather than sending the whole sheet.
+
 FLOW:
 1. Greet warmly and help them find what they need
-2. If they ask for a price list, share the relevant products and prices directly
-3. If they ask about a specific product, quote the list price per kit and total
+2. If they want the full price list/catalog, use action "send_price_list" (no text reply)
+3. If they ask about a specific product, quote the list price per kit and total directly
 4. If they push back on price, negotiate — move in increments, not all at once
 5. Once price is agreed, confirm the full order details and place it
 
 Keep replies short — this is WhatsApp. Round prices to 2 decimal places.
 Always end with a JSON block:
 {{
-  "action": "collect" | "confirm" | "place" | "invalid",
+  "action": "collect" | "confirm" | "place" | "send_price_list" | "invalid",
   "product": "...",
   "spec": "...",
   "quantity_kits": 0,
@@ -137,20 +150,8 @@ def handle_inbound(from_phone: str, body: str, name: str = "") -> str:
         set_stage(from_phone, "ordering")
         stage = "ordering"
 
-    # Detect price list requests — send XLSX via REST API, return empty TwiML.
-    # "price" is a substring match so it also catches "prices", "priced", etc.
-    price_keywords = ["price", "pricing", "pricelist", "price sheet", "full list",
-                      "catalog", "catalogue", "all products", "rates", "rate sheet",
-                      "send list", "send the list", "full catalog", "menu"]
-    if any(kw in body.lower() for kw in price_keywords):
-        try:
-            _send_price_list(from_phone)
-        except Exception as e:
-            print(f"[MessagingAgent] _send_price_list crashed: {e!r}")
-        conversation.append({"role": "assistant", "content": "[Price list sent]"})
-        save_conversation(from_phone, conversation)
-        return ""  # REST API handled the send; return empty TwiML
-
+    # Claude decides whether to send the full price list (via the
+    # "send_price_list" action) or quote a specific product inline.
     reply = _handle_ordering(from_phone, conversation, existing_lead)
 
     conversation.append({"role": "assistant", "content": reply})
@@ -214,6 +215,15 @@ def _handle_ordering(phone: str, conversation: list[dict], existing_lead: dict |
     quantity_kits = action_data.get("quantity_kits", 0)
     total_price = action_data.get("total_price", 0.0)
     notes = action_data.get("notes", "")
+
+    # Claude decided the buyer wants the full catalog — send the spreadsheet only, no text
+    if action == "send_price_list":
+        try:
+            _send_price_list(phone)
+            print(f"[MessagingAgent] Claude triggered price list send to {phone}")
+        except Exception as e:
+            print(f"[MessagingAgent] _send_price_list crashed: {e!r}")
+        return ""  # empty reply → no text, just the document
 
     if action == "place" and lead_id and product and quantity_kits:
         try:
