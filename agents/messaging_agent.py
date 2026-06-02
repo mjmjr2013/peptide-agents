@@ -128,6 +128,32 @@ def set_stage(phone: str, stage: str):
 
 # ── Core logic ─────────────────────────────────────────────────────────────────
 
+# Canonical short messages that mean "send me the whole price list" with no
+# other intent. Matched against the normalized (lowercased, punctuation-stripped)
+# message so "Prices?", "price list", "send pricing" all hit. Kept deliberately
+# tight — a product name in the message (e.g. "bpc price") will NOT match here and
+# instead goes to Claude, which quotes it inline. This avoids spamming the sheet.
+_PRICE_LIST_PHRASES = {
+    "price", "prices", "pricing", "price list", "pricelist", "price sheet",
+    "pricesheet", "price lists", "rates", "rate sheet", "catalog", "catalogue",
+    "list", "menu", "price list please", "send price list", "send prices",
+    "send pricing", "send me prices", "send me the price list",
+    "send me your price list", "send me your full price list",
+    "send me your prices", "full price list", "your price list",
+    "can i see your prices", "can i get your price list", "whats your pricing",
+    "what are your prices", "let me see prices", "see prices", "price please",
+    "prices please", "list please", "share price list", "share your price list",
+}
+
+
+def _is_price_list_request(body: str) -> bool:
+    """True only when the whole message is essentially just a price-list ask."""
+    import re
+    normalized = re.sub(r"[^a-z0-9 ]", "", body.lower()).strip()
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized in _PRICE_LIST_PHRASES
+
+
 def handle_inbound(from_phone: str, body: str, name: str = "") -> str:
     print(f"[MessagingAgent] Inbound from {from_phone}: {body!r}")
 
@@ -160,7 +186,21 @@ def handle_inbound(from_phone: str, body: str, name: str = "") -> str:
         set_stage(from_phone, "ordering")
         stage = "ordering"
 
-    # Claude decides whether to send the full price list (via the
+    # Deterministic fast-path: if the message is essentially JUST a request for
+    # the price list / catalog, send the spreadsheet only — no text, no LLM
+    # guesswork. This guarantees consistent behavior for the obvious case while
+    # still letting Claude reason about specific products and ambiguous asks.
+    if _is_price_list_request(body):
+        try:
+            _send_price_list(from_phone)
+            print(f"[MessagingAgent] Fast-path price list send to {from_phone}")
+        except Exception as e:
+            print(f"[MessagingAgent] Fast-path _send_price_list crashed: {e!r}")
+        conversation.append({"role": "assistant", "content": "[sent price list spreadsheet]"})
+        save_conversation(from_phone, conversation)
+        return ""  # empty reply → spreadsheet only, no text
+
+    # Otherwise Claude decides whether to send the full price list (via the
     # "send_price_list" action) or quote a specific product inline.
     reply = _handle_ordering(from_phone, conversation, existing_lead)
 
