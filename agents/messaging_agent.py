@@ -137,9 +137,11 @@ def handle_inbound(from_phone: str, body: str, name: str = "") -> str:
         set_stage(from_phone, "ordering")
         stage = "ordering"
 
-    # Detect price list requests — send XLSX via REST API, return empty TwiML
-    price_keywords = ["price list", "pricelist", "price sheet", "full list", "catalog",
-                      "catalogue", "all products", "all prices", "send prices", "full catalog"]
+    # Detect price list requests — send XLSX via REST API, return empty TwiML.
+    # "price" is a substring match so it also catches "prices", "priced", etc.
+    price_keywords = ["price", "pricing", "pricelist", "price sheet", "full list",
+                      "catalog", "catalogue", "all products", "rates", "rate sheet",
+                      "send list", "send the list", "full catalog", "menu"]
     if any(kw in body.lower() for kw in price_keywords):
         try:
             _send_price_list(from_phone)
