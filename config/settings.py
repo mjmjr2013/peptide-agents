@@ -19,6 +19,11 @@ class Settings:
     meta_app_secret: str = os.environ.get("META_APP_SECRET", "")
     meta_access_token: str = os.environ.get("META_ACCESS_TOKEN", "")
     meta_business_manager_id: str = os.environ.get("META_BUSINESS_MANAGER_ID", "")
+    meta_ad_account_id: str = os.environ.get("META_AD_ACCOUNT_ID", "")   # without "act_" prefix
+    meta_page_id: str = os.environ.get("META_PAGE_ID", "")               # Facebook Page ID
+
+    # Railway
+    railway_public_url: str = os.environ.get("RAILWAY_PUBLIC_URL", "")
 
     # Twilio
     twilio_account_sid: str = os.environ.get("TWILIO_ACCOUNT_SID", "")

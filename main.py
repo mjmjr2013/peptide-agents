@@ -8,6 +8,7 @@ import time
 import sys
 
 from agents.ad_agent import run_ad_agent
+from agents.lead_gen_agent import run_lead_gen_agent
 from agents.fulfillment_agent import route_all_pending_orders
 from agents.tracking_agent import check_and_notify_all
 
@@ -18,6 +19,15 @@ def run_ad_loop(interval: int = 300):
             run_ad_agent()
         except Exception as e:
             print(f"[Main/AdAgent] {e}")
+        time.sleep(interval)
+
+
+def run_lead_gen_loop(interval: int = 21600):  # every 6 hours
+    while True:
+        try:
+            run_lead_gen_agent()
+        except Exception as e:
+            print(f"[Main/LeadGen] {e}")
         time.sleep(interval)
 
 
@@ -101,6 +111,10 @@ def main():
         run_ad_loop()
         return
 
+    if mode == "leadgen":
+        run_lead_gen_agent()
+        return
+
     if mode == "fulfillment":
         run_fulfillment_loop()
         return
@@ -114,6 +128,7 @@ def main():
 
     threads = [
         threading.Thread(target=run_ad_loop, daemon=True),
+        threading.Thread(target=run_lead_gen_loop, daemon=True),
         threading.Thread(target=run_fulfillment_loop, daemon=True),
         threading.Thread(target=run_tracking_loop, daemon=True),
     ]
