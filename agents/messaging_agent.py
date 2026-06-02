@@ -313,9 +313,16 @@ def _send_price_list(to: str) -> str:
 
 def _get_base_url() -> str:
     """Return the public base URL for serving media — Railway in prod, ngrok locally."""
+    import os
+    # Explicit override takes priority
     railway_url = getattr(settings, "railway_public_url", "").rstrip("/")
     if railway_url:
         return railway_url
+    # Railway auto-provides this variable
+    domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
+    if domain:
+        return f"https://{domain}"
+    # Local ngrok fallback
     try:
         import requests as req
         data = req.get("http://localhost:4040/api/tunnels", timeout=2).json()
@@ -342,7 +349,8 @@ def twilio_webhook_handler(form_data: dict) -> str:
     reply_text = handle_inbound(from_phone, body, name=profile_name)
 
     twiml = MessagingResponse()
-    twiml.message(reply_text)
+    if reply_text:
+        twiml.message(reply_text)
     return str(twiml)
 
 
