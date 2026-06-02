@@ -280,29 +280,25 @@ def _parse_json(text: str) -> dict:
 
 # ── Twilio helpers ─────────────────────────────────────────────────────────────
 
+PRICE_LIST_XLSX_URL = "https://raw.githubusercontent.com/mjmjr2013/peptide-agents/main/static/price_list.xlsx"
+
+
 def _send_price_list(to: str, base_url: str = "") -> str:
     """Send the bilingual price list as an xlsx file via WhatsApp."""
-    from core.price_image import generate_price_list_xlsx, XLSX_PATH
-
-    if not XLSX_PATH.exists():
-        generate_price_list_xlsx()
-
-    xlsx_url = f"{base_url}/price-list.xlsx" if base_url else ""
     from_number = settings.twilio_whatsapp_from if "whatsapp" in to else settings.twilio_phone_number
-    print(f"[MessagingAgent] Sending price list xlsx to {to} via {xlsx_url!r}")
+    print(f"[MessagingAgent] Sending price list xlsx to {to}")
 
-    if xlsx_url:
-        try:
-            twilio_client.messages.create(
-                body="Here's our current price list — all prices per kit (10 vials). Reply with a product name to get a specific quote or place an order.",
-                from_=from_number,
-                to=to,
-                media_url=[xlsx_url],
-            )
-            print(f"[MessagingAgent] Price list xlsx sent to {to}")
-            return ""
-        except Exception as e:
-            print(f"[MessagingAgent] xlsx send failed ({e}), falling back to text")
+    try:
+        twilio_client.messages.create(
+            body="Here's our current price list — all prices per kit (10 vials). Reply with a product name to get a specific quote or place an order.",
+            from_=from_number,
+            to=to,
+            media_url=[PRICE_LIST_XLSX_URL],
+        )
+        print(f"[MessagingAgent] Price list xlsx sent to {to}")
+        return ""
+    except Exception as e:
+        print(f"[MessagingAgent] xlsx send failed ({e}), falling back to text")
 
     # Text fallback
     messages = get_price_list_messages()
