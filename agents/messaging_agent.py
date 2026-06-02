@@ -280,7 +280,7 @@ def _parse_json(text: str) -> dict:
 
 # ── Twilio helpers ─────────────────────────────────────────────────────────────
 
-PRICE_LIST_XLSX_URL = "https://peptide-agents-production.up.railway.app/price-list.xlsx"
+PRICE_LIST_PDF_URL = "https://peptide-agents-production.up.railway.app/price-list.pdf"
 
 
 def _send_price_list(to: str, base_url: str = "") -> str:
@@ -293,7 +293,7 @@ def _send_price_list(to: str, base_url: str = "") -> str:
             body="Here's our current price list — all prices per kit (10 vials). Reply with a product name to get a specific quote or place an order.",
             from_=from_number,
             to=to,
-            media_url=[PRICE_LIST_XLSX_URL],
+            media_url=[PRICE_LIST_PDF_URL],
         )
         print(f"[MessagingAgent] Price list xlsx sent to {to}")
         return ""

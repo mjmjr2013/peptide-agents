@@ -91,7 +91,6 @@ def start_webhook_server(port: int = 5000):
 
         @app.route("/price-list.xlsx")
         def price_list_xlsx():
-            """Serve the bilingual price list as an xlsx spreadsheet."""
             from flask import send_file
             from core.price_image import XLSX_PATH, generate_price_list_xlsx
             if not XLSX_PATH.exists():
@@ -100,6 +99,16 @@ def start_webhook_server(port: int = 5000):
                              mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                              as_attachment=True,
                              download_name="Northline_Price_List.xlsx")
+
+        @app.route("/price-list.pdf")
+        def price_list_pdf():
+            from flask import send_file
+            from core.price_image import PDF_PATH, generate_price_list_pdf
+            if not PDF_PATH.exists():
+                generate_price_list_pdf()
+            return send_file(str(PDF_PATH), mimetype="application/pdf",
+                             as_attachment=False,
+                             download_name="Northline_Price_List.pdf")
 
         @app.route("/health")
         def health():

@@ -14,10 +14,12 @@ if _os.environ.get("RAILWAY_ENVIRONMENT") or not (_ICLOUD.parent.exists()):
     OUTPUT_PATH    = _STATIC / "price_list.png"
     CN_OUTPUT_PATH = _STATIC / "price_list_cn.png"
     XLSX_PATH      = _STATIC / "price_list.xlsx"
+    PDF_PATH       = _STATIC / "price_list.pdf"
 else:
     OUTPUT_PATH    = _ICLOUD / "price_list.png"
     CN_OUTPUT_PATH = _ICLOUD / "price_list_cn.png"
     XLSX_PATH      = _ICLOUD / "price_list.xlsx"
+    PDF_PATH       = _ICLOUD / "price_list.pdf"
 
 CATEGORIES = [
     ("GLP-1 Peptides", [
@@ -417,6 +419,94 @@ def generate_price_list_image_cn() -> Path:
     return generate_price_list_image(lang="cn")
 
 
+def generate_price_list_pdf() -> Path:
+    """Generate the bilingual price list as a PDF for WhatsApp delivery."""
+    PDF_PATH.parent.mkdir(parents=True, exist_ok=True)
+    generate_price_list_image(lang="cn")  # reuse CN render logic to a temp PNG, then save PDF
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+
+    BG = "#FFFFFF"; HEADER_BG = "#2C3E50"; CAT_BG = "#BDC3C7"
+    CAT_TEXT = "#1C1C1E"; BORDER = "#D0D0D0"; TEXT_MAIN = "#1C1C1E"
+    TEXT_DIM = "#555555"; PRICE_COLOR = "#1C1C1E"; COL_HEAD = "#FFFFFF"
+    PRODUCT_COLORS = ["#FFF9C4","#C8E6C9","#BBDEFB","#F8BBD0","#FFE0B2",
+                      "#E1BEE7","#B2EBF2","#DCEDC8","#FFCCBC","#CFD8DC",
+                      "#F0F4C3","#D7CCC8","#B3E5FC","#F9FBE7","#FCE4EC","#E8F5E9"]
+    CAT_LABELS = {"GLP-1 Peptides":"GLP-1 肽类  (GLP-1 Peptides)",
+                  "Healing & Recovery":"愈合恢复  (Healing & Recovery)",
+                  "GH / Growth":"生长激素  (GH / Growth)",
+                  "Cognitive & Wellness":"认知健康  (Cognitive & Wellness)"}
+    title_text = "NORTHLINE GROUP  —  RESEARCH PEPTIDE PRICE LIST"
+    sub_text   = "北线集团 — 每套 (10瓶) · 所有价格USD · 批量优惠可谈  |  Per Kit (10 Vials) · All Prices USD"
+
+    col_gap = 0.04; col_w = (1.0 - col_gap) / 2
+    left_cats = CATEGORIES[:2]; right_cats = CATEGORIES[2:]
+    def col_rows(cats): return sum(len(r) for _, r in cats) + len(cats)
+    n_left = col_rows(left_cats); n_right = col_rows(right_cats)
+    n_rows = max(n_left, n_right)
+    n_cats_max = max(len(left_cats), len(right_cats))
+    n_product_max = n_rows - n_cats_max
+    coeff = 1.5 + n_cats_max * (1.5 + 0.4) + n_product_max
+    row_h = min(0.022, 0.93 / coeff); cat_h = 1.5 * row_h; gap = 0.4 * row_h
+    FW = 22; FH = 2.8 + n_rows * 0.32
+    fig = plt.figure(figsize=(FW, FH), facecolor=BG)
+    ax = fig.add_axes([0, 0, 1, 1]); ax.set_facecolor(BG); ax.axis("off"); ax.set_xlim(0, 1)
+    title_h = 0.07; footer_h = 0.035; body_h = 1.0 - title_h - footer_h
+    def fy(raw_y): return (1.0 - title_h) - raw_y * body_h
+    ax.add_patch(mpatches.FancyBboxPatch((0, 1-title_h), 1, title_h, boxstyle="square,pad=0",
+        facecolor=HEADER_BG, edgecolor="none", transform=ax.transAxes, clip_on=False))
+    ax.text(0.5, 1-title_h/2, title_text, fontsize=24, fontweight="bold", color="white",
+            ha="center", va="center", transform=ax.transAxes)
+    ax.text(0.5, 1-title_h+0.008, sub_text, fontsize=13, color="#AAAAAA",
+            ha="center", va="bottom", transform=ax.transAxes)
+    def draw_col_headers(x0):
+        y0 = fy(0)
+        ax.add_patch(plt.Rectangle((x0, y0-cat_h), col_w, cat_h, facecolor=HEADER_BG,
+            edgecolor="none", transform=ax.transAxes, clip_on=False))
+        for txt, xf in [("SKU / 产品代码", 0.006), ("PRODUCT / 产品", col_w*0.15),
+                        ("SPEC / 规格", col_w*0.54), ("PRICE/KIT / 价格", col_w*0.87)]:
+            ax.text(x0+xf, y0-cat_h/2, txt, fontsize=11, fontweight="bold", color=COL_HEAD,
+                    va="center", ha="center" if "PRICE" in txt else "left", transform=ax.transAxes)
+    draw_col_headers(0); draw_col_headers(col_w + col_gap)
+    def draw_column(cats, x0):
+        y_frac = cat_h; color_idx = 0
+        for cat_name, rows in cats:
+            y = fy(y_frac)
+            ax.add_patch(plt.Rectangle((x0, y-cat_h), col_w, cat_h, facecolor=CAT_BG,
+                edgecolor=BORDER, linewidth=0.5, transform=ax.transAxes, clip_on=False))
+            ax.text(x0+0.01, y-cat_h/2, CAT_LABELS.get(cat_name, cat_name).upper(),
+                    fontsize=13, fontweight="bold", color=CAT_TEXT, va="center", transform=ax.transAxes)
+            y_frac += cat_h; current_product = None
+            row_color = PRODUCT_COLORS[color_idx % len(PRODUCT_COLORS)]
+            for sku, product, spec, price in rows:
+                y = fy(y_frac)
+                if product != current_product:
+                    current_product = product; color_idx += 1
+                    row_color = PRODUCT_COLORS[color_idx % len(PRODUCT_COLORS)]
+                ax.add_patch(plt.Rectangle((x0, y-row_h), col_w, row_h, facecolor=row_color,
+                    edgecolor=BORDER, linewidth=0.3, transform=ax.transAxes, clip_on=False))
+                ax.text(x0+0.006, y-row_h/2, sku, fontsize=11, fontweight="bold",
+                        color=TEXT_DIM, va="center", transform=ax.transAxes)
+                ax.text(x0+col_w*0.15, y-row_h/2, product, fontsize=12, color=TEXT_MAIN,
+                        fontweight="bold", va="center", transform=ax.transAxes)
+                ax.text(x0+col_w*0.54, y-row_h/2, spec, fontsize=12, color=TEXT_DIM,
+                        va="center", transform=ax.transAxes)
+                ax.text(x0+col_w*0.87, y-row_h/2, price, fontsize=12, fontweight="bold",
+                        color=PRICE_COLOR, ha="center", va="center", transform=ax.transAxes)
+                y_frac += row_h
+            y_frac += gap
+    draw_column(left_cats, 0); draw_column(right_cats, col_w + col_gap)
+    ax.text(0.5, footer_h/2,
+            "所有产品仅供研究使用 · 最低订购: 1套  |  Research use only · Min order: 1 kit",
+            fontsize=11, color=TEXT_DIM, ha="center", va="center", transform=ax.transAxes)
+    fig.savefig(PDF_PATH, dpi=150, bbox_inches="tight", facecolor=BG, edgecolor="none")
+    plt.close(fig)
+    print(f"[PriceImage] Saved PDF to {PDF_PATH}")
+    return PDF_PATH
+
+
 def generate_price_list_xlsx() -> Path:
     """Generate a bilingual xlsx price list for WhatsApp delivery."""
     from openpyxl import Workbook
@@ -536,4 +626,5 @@ if __name__ == "__main__":
     generate_price_list_image()
     generate_price_list_image_cn()
     generate_price_list_xlsx()
+    generate_price_list_pdf()
     print("Done.")
