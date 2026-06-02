@@ -317,12 +317,13 @@ def _send_price_list(to: str, base_url: str = "") -> str:
 def _get_base_url() -> str:
     """Return the public base URL for serving media."""
     import os
-    # Try Flask request context first (most reliable — no config needed)
+    # Railway's reverse proxy sets X-Forwarded-Proto and passes the real Host header
     try:
         from flask import request
-        url = request.url_root.rstrip("/")
-        if url.startswith("http"):
-            return url
+        scheme = request.headers.get("X-Forwarded-Proto", "https")
+        host = request.headers.get("X-Forwarded-Host") or request.host
+        if host and not host.startswith("0.0.0.0") and not host.startswith("127."):
+            return f"{scheme}://{host}"
     except Exception:
         pass
     # Explicit env var override
