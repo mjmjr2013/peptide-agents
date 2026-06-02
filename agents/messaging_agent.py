@@ -111,9 +111,13 @@ def handle_inbound(from_phone: str, body: str, name: str = "") -> str:
     if body.strip().upper() == "RESET":
         _conversations.pop(from_phone, None)
         _lead_stage.pop(from_phone, None)
-        existing = airtable.find_lead_by_phone(from_phone)
-        if existing:
-            airtable.leads.delete(existing["id"])
+        try:
+            existing = airtable.find_lead_by_phone(from_phone)
+            if existing:
+                airtable.leads.delete(existing["id"])
+                print(f"[MessagingAgent] Deleted Airtable lead for {from_phone}")
+        except Exception as e:
+            print(f"[MessagingAgent] Airtable delete failed (non-fatal): {e!r}")
         print(f"[MessagingAgent] Reset state for {from_phone}")
         return "Reset. You're a fresh lead — say hi to start over."
 
@@ -133,14 +137,14 @@ def handle_inbound(from_phone: str, body: str, name: str = "") -> str:
         set_stage(from_phone, "ordering")
         stage = "ordering"
 
-    # Detect price list requests — send full formatted catalog
+    # Detect price list requests — send XLSX via REST API, return empty TwiML
     price_keywords = ["price list", "pricelist", "price sheet", "full list", "catalog",
                       "catalogue", "all products", "all prices", "send prices", "full catalog"]
     if any(kw in body.lower() for kw in price_keywords):
-        reply = _send_price_list(from_phone, base_url=_get_base_url())
+        _send_price_list(from_phone)
         conversation.append({"role": "assistant", "content": "[Price list sent]"})
         save_conversation(from_phone, conversation)
-        return reply
+        return ""  # REST API handled the send; return empty TwiML
 
     reply = _handle_ordering(from_phone, conversation, existing_lead)
 
@@ -280,34 +284,30 @@ def _parse_json(text: str) -> dict:
 
 # ── Twilio helpers ─────────────────────────────────────────────────────────────
 
-PRICE_LIST_PDF_URL = "https://peptide-agents-production.up.railway.app/price-list.pdf"
+PRICE_LIST_XLSX_URL = "https://peptide-agents-production.up.railway.app/price-list.xlsx"
 
 
-def _send_price_list(to: str, base_url: str = "") -> str:
-    """Send the bilingual price list as an xlsx file via WhatsApp."""
+def _send_price_list(to: str) -> None:
+    """Send the bilingual XLSX price list via Twilio REST API."""
     from_number = settings.twilio_whatsapp_from if "whatsapp" in to else settings.twilio_phone_number
-    print(f"[MessagingAgent] Sending price list xlsx to {to}")
-
+    print(f"[PriceList] to={to!r} from={from_number!r} url={PRICE_LIST_XLSX_URL}")
     try:
-        twilio_client.messages.create(
-            body="Here's our current price list — all prices per kit (10 vials). Reply with a product name to get a specific quote or place an order.",
+        msg = twilio_client.messages.create(
+            body="Here's our current price list — all prices per kit (10 vials). Reply with any product name to get a quote.",
             from_=from_number,
             to=to,
-            media_url=[PRICE_LIST_PDF_URL],
+            media_url=[PRICE_LIST_XLSX_URL],
         )
-        print(f"[MessagingAgent] Price list xlsx sent to {to}")
-        return ""
+        print(f"[PriceList] Sent OK: SID={msg.sid} status={msg.status}")
     except Exception as e:
-        print(f"[MessagingAgent] xlsx send failed ({e}), falling back to text")
-
-    # Text fallback
-    messages = get_price_list_messages()
-    for msg in messages[:-1]:
-        try:
-            twilio_client.messages.create(body=msg, from_=from_number, to=to)
-        except Exception:
-            pass
-    return messages[-1]
+        print(f"[PriceList] FAILED: {e!r}")
+        # Text fallback
+        fallback_msgs = get_price_list_messages()
+        for m in fallback_msgs:
+            try:
+                twilio_client.messages.create(body=m, from_=from_number, to=to)
+            except Exception as e2:
+                print(f"[PriceList] Text fallback also failed: {e2!r}")
 
 
 def _get_base_url() -> str:
@@ -353,11 +353,11 @@ def twilio_webhook_handler(form_data: dict) -> str:
     body = form_data.get("Body", "").strip()
     profile_name = form_data.get("ProfileName", "")
 
-    reply_text = handle_inbound(from_phone, body, name=profile_name)
+    reply = handle_inbound(from_phone, body, name=profile_name)
 
     twiml = MessagingResponse()
-    if reply_text:
-        twiml.message(reply_text)
+    if reply:
+        twiml.message(reply)
     return str(twiml)
 
 
