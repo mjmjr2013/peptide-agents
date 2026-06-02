@@ -280,7 +280,7 @@ def _parse_json(text: str) -> dict:
 
 # ── Twilio helpers ─────────────────────────────────────────────────────────────
 
-PRICE_LIST_XLSX_URL = "https://raw.githubusercontent.com/mjmjr2013/peptide-agents/main/static/price_list.xlsx"
+PRICE_LIST_XLSX_URL = "https://peptide-agents-production.up.railway.app/price-list.xlsx"
 
 
 def _send_price_list(to: str, base_url: str = "") -> str:
