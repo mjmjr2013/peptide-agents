@@ -108,6 +108,15 @@ def set_stage(phone: str, stage: str):
 def handle_inbound(from_phone: str, body: str, name: str = "") -> str:
     print(f"[MessagingAgent] Inbound from {from_phone}: {body!r}")
 
+    if body.strip().upper() == "RESET":
+        _conversations.pop(from_phone, None)
+        _lead_stage.pop(from_phone, None)
+        existing = airtable.find_lead_by_phone(from_phone)
+        if existing:
+            airtable.leads.delete(existing["id"])
+        print(f"[MessagingAgent] Reset state for {from_phone}")
+        return "Reset. You're a fresh lead — say hi to start over."
+
     conversation = get_conversation(from_phone)
     stage = get_stage(from_phone)
     existing_lead = airtable.find_lead_by_phone(from_phone)
@@ -272,28 +281,27 @@ def _parse_json(text: str) -> dict:
 # ── Twilio helpers ─────────────────────────────────────────────────────────────
 
 def _send_price_list(to: str) -> str:
-    """Send the price list as a single image via WhatsApp."""
-    from core.price_image import generate_price_list_image_cn, CN_OUTPUT_PATH
+    """Send the bilingual price list as an xlsx file via WhatsApp."""
+    from core.price_image import generate_price_list_xlsx, XLSX_PATH
 
-    # Regenerate image if it doesn't exist
-    if not CN_OUTPUT_PATH.exists():
-        generate_price_list_image_cn()
+    if not XLSX_PATH.exists():
+        generate_price_list_xlsx()
 
-    ngrok_url = _get_ngrok_url()
-    image_url = f"{ngrok_url}/price-list.png"
+    base_url = _get_base_url()
+    xlsx_url = f"{base_url}/price-list.xlsx"
     from_number = settings.twilio_whatsapp_from if "whatsapp" in to else settings.twilio_phone_number
 
     try:
         twilio_client.messages.create(
-            body="Here's our current price list — all prices per kit (10 vials). Reply with a product name to get a specific quote or place an order. 🧬",
+            body="Here's our current price list — all prices per kit (10 vials). Reply with a product name to get a specific quote or place an order.",
             from_=from_number,
             to=to,
-            media_url=[image_url],
+            media_url=[xlsx_url],
         )
-        print(f"[MessagingAgent] Price list image sent to {to}")
-        return ""  # Image already sent, no additional reply needed
+        print(f"[MessagingAgent] Price list xlsx sent to {to}")
+        return ""
     except Exception as e:
-        print(f"[MessagingAgent] Image send failed, falling back to text: {e}")
+        print(f"[MessagingAgent] xlsx send failed, falling back to text: {e}")
         messages = get_price_list_messages()
         for msg in messages[:-1]:
             try:
@@ -303,12 +311,15 @@ def _send_price_list(to: str) -> str:
         return messages[-1]
 
 
-def _get_ngrok_url() -> str:
-    """Get the current ngrok public URL."""
+def _get_base_url() -> str:
+    """Return the public base URL for serving media — Railway in prod, ngrok locally."""
+    railway_url = getattr(settings, "railway_public_url", "").rstrip("/")
+    if railway_url:
+        return railway_url
     try:
         import requests as req
         data = req.get("http://localhost:4040/api/tunnels", timeout=2).json()
-        return data["tunnels"][0]["public_url"]
+        return data["tunnels"][0]["public_url"].rstrip("/")
     except Exception:
         return ""
 

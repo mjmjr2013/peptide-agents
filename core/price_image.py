@@ -13,9 +13,11 @@ _ICLOUD = Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs" /
 if _os.environ.get("RAILWAY_ENVIRONMENT") or not (_ICLOUD.parent.exists()):
     OUTPUT_PATH    = _STATIC / "price_list.png"
     CN_OUTPUT_PATH = _STATIC / "price_list_cn.png"
+    XLSX_PATH      = _STATIC / "price_list.xlsx"
 else:
     OUTPUT_PATH    = _ICLOUD / "price_list.png"
     CN_OUTPUT_PATH = _ICLOUD / "price_list_cn.png"
+    XLSX_PATH      = _ICLOUD / "price_list.xlsx"
 
 CATEGORIES = [
     ("GLP-1 Peptides", [
@@ -272,12 +274,12 @@ def generate_price_list_image(lang: str = "en") -> Path:
     n_cats_max    = max(len(left_cats), len(right_cats))
     n_product_max = n_rows - n_cats_max
     coeff = 1.5 + n_cats_max * (1.5 + 0.4) + n_product_max
-    row_h = min(0.0185, 0.93 / coeff)
+    row_h = min(0.022, 0.93 / coeff)
     cat_h = 1.5 * row_h
     gap   = 0.4 * row_h
 
-    FW = 14
-    FH = 2.2 + n_rows * 0.25
+    FW = 22
+    FH = 2.8 + n_rows * 0.32
 
     fig = plt.figure(figsize=(FW, FH), facecolor=BG)
     ax  = fig.add_axes([0, 0, 1, 1])
@@ -301,11 +303,11 @@ def generate_price_list_image(lang: str = "en") -> Path:
         transform=ax.transAxes, clip_on=False))
     ax.text(0.5, 1 - title_h / 2,
             title_text,
-            fontsize=16, fontweight="bold", color="white",
+            fontsize=24, fontweight="bold", color="white",
             ha="center", va="center", transform=ax.transAxes)
     ax.text(0.5, 1 - title_h + 0.008,
             sub_text,
-            fontsize=9, color="#AAAAAA",
+            fontsize=13, color="#AAAAAA",
             ha="center", va="bottom", transform=ax.transAxes)
 
     # ── Column header row ────────────────────────────────────────────────────
@@ -317,16 +319,16 @@ def generate_price_list_image(lang: str = "en") -> Path:
             facecolor=HEADER_BG, edgecolor="none",
             transform=ax.transAxes, clip_on=False))
         ax.text(x0 + 0.006, y0 - cat_h / 2, hdr_sku,
-                fontsize=7.5, fontweight="bold", color=COL_HEAD,
+                fontsize=11, fontweight="bold", color=COL_HEAD,
                 va="center", transform=ax.transAxes)
         ax.text(x0 + col_w * 0.15, y0 - cat_h / 2, hdr_prod,
-                fontsize=7.5, fontweight="bold", color=COL_HEAD,
+                fontsize=11, fontweight="bold", color=COL_HEAD,
                 va="center", transform=ax.transAxes)
         ax.text(x0 + col_w * 0.54, y0 - cat_h / 2, hdr_spec,
-                fontsize=7.5, fontweight="bold", color=COL_HEAD,
+                fontsize=11, fontweight="bold", color=COL_HEAD,
                 va="center", transform=ax.transAxes)
         ax.text(x0 + col_w * 0.87, y0 - cat_h / 2, hdr_price,
-                fontsize=7.5, fontweight="bold", color=COL_HEAD,
+                fontsize=11, fontweight="bold", color=COL_HEAD,
                 ha="center", va="center", transform=ax.transAxes)
 
     draw_col_headers(0)
@@ -347,7 +349,7 @@ def generate_price_list_image(lang: str = "en") -> Path:
                 transform=ax.transAxes, clip_on=False))
             display_name = cat_map.get(cat_name, cat_name).upper()
             ax.text(x0 + 0.01, y - cat_h / 2, display_name,
-                    fontsize=8.5, fontweight="bold", color=CAT_TEXT,
+                    fontsize=13, fontweight="bold", color=CAT_TEXT,
                     va="center", transform=ax.transAxes)
             y_frac += cat_h
 
@@ -371,22 +373,22 @@ def generate_price_list_image(lang: str = "en") -> Path:
 
                 # SKU code
                 ax.text(x0 + 0.006, y - row_h / 2, sku,
-                        fontsize=7.5, fontweight="bold", color=TEXT_DIM,
+                        fontsize=11, fontweight="bold", color=TEXT_DIM,
                         va="center", transform=ax.transAxes)
 
                 # Product name
                 ax.text(x0 + col_w * 0.15, y - row_h / 2, product,
-                        fontsize=8, color=TEXT_MAIN, fontweight="bold",
+                        fontsize=12, color=TEXT_MAIN, fontweight="bold",
                         va="center", transform=ax.transAxes)
 
                 # Spec
                 ax.text(x0 + col_w * 0.54, y - row_h / 2, spec,
-                        fontsize=8, color=TEXT_DIM,
+                        fontsize=12, color=TEXT_DIM,
                         va="center", transform=ax.transAxes)
 
                 # Price
                 ax.text(x0 + col_w * 0.87, y - row_h / 2, price,
-                        fontsize=8, fontweight="bold", color=PRICE_COLOR,
+                        fontsize=12, fontweight="bold", color=PRICE_COLOR,
                         ha="center", va="center", transform=ax.transAxes)
 
                 y_frac += row_h
@@ -399,11 +401,11 @@ def generate_price_list_image(lang: str = "en") -> Path:
     # ── Footer ───────────────────────────────────────────────────────────────
     ax.text(0.5, footer_h / 2,
             footer_text,
-            fontsize=8, color=TEXT_DIM, ha="center", va="center",
+            fontsize=11, color=TEXT_DIM, ha="center", va="center",
             transform=ax.transAxes)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=150, bbox_inches="tight",
+    fig.savefig(out_path, dpi=250, bbox_inches="tight",
                 facecolor=BG, edgecolor="none")
     plt.close(fig)
     print(f"[PriceImage] Saved to {out_path}")
@@ -415,7 +417,123 @@ def generate_price_list_image_cn() -> Path:
     return generate_price_list_image(lang="cn")
 
 
+def generate_price_list_xlsx() -> Path:
+    """Generate a bilingual xlsx price list for WhatsApp delivery."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    CAT_LABELS = {
+        "GLP-1 Peptides":      "GLP-1 肽类  (GLP-1 Peptides)",
+        "Healing & Recovery":  "愈合恢复  (Healing & Recovery)",
+        "GH / Growth":         "生长激素  (GH / Growth)",
+        "Cognitive & Wellness":"认知健康  (Cognitive & Wellness)",
+    }
+    PRODUCT_BANDS = [
+        "FFF9C4", "C8E6C9", "BBDEFB", "F8BBD0", "FFE0B2",
+        "E1BEE7", "B2EBF2", "DCEDC8", "FFCCBC", "CFD8DC",
+        "F0F4C3", "D7CCC8", "B3E5FC", "F9FBE7", "FCE4EC", "E8F5E9",
+    ]
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Price List"
+
+    thin = Side(style="thin", color="D0D0D0")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    # Title rows
+    ws.merge_cells("A1:D1")
+    t1 = ws["A1"]
+    t1.value = "NORTHLINE GROUP  —  RESEARCH PEPTIDE PRICE LIST"
+    t1.font = Font(bold=True, size=14, color="FFFFFF")
+    t1.fill = PatternFill("solid", fgColor="2C3E50")
+    t1.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 28
+
+    ws.merge_cells("A2:D2")
+    t2 = ws["A2"]
+    t2.value = "北线集团 — 每套 (10瓶) · 所有价格USD · 批量优惠可谈  |  Per Kit (10 Vials) · All Prices USD · Volume Pricing Available"
+    t2.font = Font(italic=True, size=10, color="555555")
+    t2.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[2].height = 18
+
+    # Column headers
+    headers = ["SKU  /  产品代码", "PRODUCT  /  产品", "SPEC  /  规格", "PRICE / KIT  /  价格/套"]
+    row = 3
+    for col, h in enumerate(headers, 1):
+        cell = ws.cell(row=row, column=col, value=h)
+        cell.font = Font(bold=True, size=10, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="2C3E50")
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.border = border
+    ws.row_dimensions[row].height = 20
+    row += 1
+
+    color_idx = 0
+    for cat_name, items in CATEGORIES:
+        # Category header
+        ws.merge_cells(f"A{row}:D{row}")
+        cat_cell = ws[f"A{row}"]
+        cat_cell.value = CAT_LABELS.get(cat_name, cat_name).upper()
+        cat_cell.font = Font(bold=True, size=11, color="1C1C1E")
+        cat_cell.fill = PatternFill("solid", fgColor="BDC3C7")
+        cat_cell.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+        cat_cell.border = border
+        ws.row_dimensions[row].height = 18
+        row += 1
+
+        current_product = None
+        band = PRODUCT_BANDS[color_idx % len(PRODUCT_BANDS)]
+
+        for sku, product, spec, price in items:
+            if product != current_product:
+                current_product = product
+                color_idx += 1
+                band = PRODUCT_BANDS[color_idx % len(PRODUCT_BANDS)]
+
+            fill = PatternFill("solid", fgColor=band.lstrip("#"))
+            for col, val in enumerate([sku, product, spec, price], 1):
+                cell = ws.cell(row=row, column=col, value=val)
+                cell.fill = fill
+                cell.border = border
+                cell.alignment = Alignment(vertical="center", indent=1 if col < 4 else 0,
+                                           horizontal="center" if col == 4 else "left")
+                if col == 1:
+                    cell.font = Font(bold=True, size=9, color="555555")
+                elif col == 2:
+                    cell.font = Font(bold=True, size=10)
+                elif col == 4:
+                    cell.font = Font(bold=True, size=10)
+                else:
+                    cell.font = Font(size=10)
+            ws.row_dimensions[row].height = 16
+            row += 1
+
+    # Footer
+    ws.merge_cells(f"A{row}:D{row}")
+    f = ws[f"A{row}"]
+    f.value = "所有产品仅供研究使用 · 最低订购: 1套 · 价格可能变动  |  Research use only · Min order: 1 kit · Prices subject to change"
+    f.font = Font(italic=True, size=9, color="888888")
+    f.alignment = Alignment(horizontal="center")
+    ws.row_dimensions[row].height = 16
+
+    # Column widths
+    ws.column_dimensions["A"].width = 14
+    ws.column_dimensions["B"].width = 26
+    ws.column_dimensions["C"].width = 12
+    ws.column_dimensions["D"].width = 16
+
+    ws.freeze_panes = "A4"
+
+    XLSX_PATH.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(XLSX_PATH)
+    print(f"[PriceImage] Saved xlsx to {XLSX_PATH}")
+    return XLSX_PATH
+
+
 if __name__ == "__main__":
     generate_price_list_image()
     generate_price_list_image_cn()
+    generate_price_list_xlsx()
     print("Done.")

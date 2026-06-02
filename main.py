@@ -89,6 +89,18 @@ def start_webhook_server(port: int = 5000):
                 generate_price_list_image_cn()
             return send_file(str(CN_OUTPUT_PATH), mimetype="image/png")
 
+        @app.route("/price-list.xlsx")
+        def price_list_xlsx():
+            """Serve the bilingual price list as an xlsx spreadsheet."""
+            from flask import send_file
+            from core.price_image import XLSX_PATH, generate_price_list_xlsx
+            if not XLSX_PATH.exists():
+                generate_price_list_xlsx()
+            return send_file(str(XLSX_PATH),
+                             mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                             as_attachment=True,
+                             download_name="Northline_Price_List.xlsx")
+
         @app.route("/health")
         def health():
             return {"status": "ok"}, 200
