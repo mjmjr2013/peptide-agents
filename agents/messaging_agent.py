@@ -294,16 +294,14 @@ PRICE_LIST_XLSX_URL = f"{_BASE_URL}/price-list.xlsx"
 
 def _send_price_list(to: str) -> None:
     """
-    Send the bilingual XLSX price list as a WhatsApp document attachment.
-    Twilio fetches the file from our Railway URL and delivers it as a
-    downloadable spreadsheet — recipients open it in Excel / Numbers / Sheets.
-    Falls back to text if the attachment fails.
+    Send the bilingual XLSX price list as a WhatsApp document attachment —
+    no accompanying text, just the spreadsheet file. Recipients open it in
+    Excel / Numbers / Sheets. Falls back to text only if the attachment fails.
     """
     from_number = settings.twilio_whatsapp_from if "whatsapp" in to else settings.twilio_phone_number
-    print(f"[PriceList] Sending XLSX to {to!r} from {from_number!r} — {PRICE_LIST_XLSX_URL}")
+    print(f"[PriceList] Sending XLSX (no text) to {to!r} from {from_number!r} — {PRICE_LIST_XLSX_URL}")
     try:
         msg = twilio_client.messages.create(
-            body="Here's our full price list — all prices are per kit (10 vials). Open the file, then reply with any product name and quantity to get a quote.",
             from_=from_number,
             to=to,
             media_url=[PRICE_LIST_XLSX_URL],
