@@ -137,7 +137,7 @@ def handle_inbound(from_phone: str, body: str, name: str = "") -> str:
     price_keywords = ["price list", "pricelist", "price sheet", "full list", "catalog",
                       "catalogue", "all products", "all prices", "send prices", "full catalog"]
     if any(kw in body.lower() for kw in price_keywords):
-        reply = _send_price_list(from_phone)
+        reply = _send_price_list(from_phone, base_url=_get_base_url())
         conversation.append({"role": "assistant", "content": "[Price list sent]"})
         save_conversation(from_phone, conversation)
         return reply
@@ -280,45 +280,55 @@ def _parse_json(text: str) -> dict:
 
 # ── Twilio helpers ─────────────────────────────────────────────────────────────
 
-def _send_price_list(to: str) -> str:
+def _send_price_list(to: str, base_url: str = "") -> str:
     """Send the bilingual price list as an xlsx file via WhatsApp."""
     from core.price_image import generate_price_list_xlsx, XLSX_PATH
 
     if not XLSX_PATH.exists():
         generate_price_list_xlsx()
 
-    base_url = _get_base_url()
-    xlsx_url = f"{base_url}/price-list.xlsx"
+    xlsx_url = f"{base_url}/price-list.xlsx" if base_url else ""
     from_number = settings.twilio_whatsapp_from if "whatsapp" in to else settings.twilio_phone_number
+    print(f"[MessagingAgent] Sending price list xlsx to {to} via {xlsx_url!r}")
 
-    try:
-        twilio_client.messages.create(
-            body="Here's our current price list — all prices per kit (10 vials). Reply with a product name to get a specific quote or place an order.",
-            from_=from_number,
-            to=to,
-            media_url=[xlsx_url],
-        )
-        print(f"[MessagingAgent] Price list xlsx sent to {to}")
-        return ""
-    except Exception as e:
-        print(f"[MessagingAgent] xlsx send failed, falling back to text: {e}")
-        messages = get_price_list_messages()
-        for msg in messages[:-1]:
-            try:
-                twilio_client.messages.create(body=msg, from_=from_number, to=to)
-            except Exception:
-                pass
-        return messages[-1]
+    if xlsx_url:
+        try:
+            twilio_client.messages.create(
+                body="Here's our current price list — all prices per kit (10 vials). Reply with a product name to get a specific quote or place an order.",
+                from_=from_number,
+                to=to,
+                media_url=[xlsx_url],
+            )
+            print(f"[MessagingAgent] Price list xlsx sent to {to}")
+            return ""
+        except Exception as e:
+            print(f"[MessagingAgent] xlsx send failed ({e}), falling back to text")
+
+    # Text fallback
+    messages = get_price_list_messages()
+    for msg in messages[:-1]:
+        try:
+            twilio_client.messages.create(body=msg, from_=from_number, to=to)
+        except Exception:
+            pass
+    return messages[-1]
 
 
 def _get_base_url() -> str:
-    """Return the public base URL for serving media — Railway in prod, ngrok locally."""
+    """Return the public base URL for serving media."""
     import os
-    # Explicit override takes priority
+    # Try Flask request context first (most reliable — no config needed)
+    try:
+        from flask import request
+        url = request.url_root.rstrip("/")
+        if url.startswith("http"):
+            return url
+    except Exception:
+        pass
+    # Explicit env var override
     railway_url = getattr(settings, "railway_public_url", "").rstrip("/")
     if railway_url:
         return railway_url
-    # Railway auto-provides this variable
     domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
     if domain:
         return f"https://{domain}"
