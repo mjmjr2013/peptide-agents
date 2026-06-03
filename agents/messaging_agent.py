@@ -11,7 +11,10 @@ from twilio.twiml.messaging_response import MessagingResponse
 
 from core.claude_client import claude
 from core.airtable_client import airtable
-from core.pricing import get_catalog_text, get_price_list_messages, get_floor_price, MARKUP_START, MARKUP_FLOOR
+from core.pricing import (
+    get_catalog_text, get_price_list_messages, get_floor_price, get_list_price,
+    max_discount_for_qty, HANDOFF_KITS, MARKUP_START, MARKUP_FLOOR,
+)
 from config import settings
 
 QUALIFY_PROMPT = """You are a professional sales qualifier for Northline Group, a peptide research supply company.
@@ -90,15 +93,23 @@ PAYMENT (crypto only):
 
 PRICING RULES:
 - All prices are per kit (10 vials). We sell by the kit only.
-- List price is 6x our cost. Floor price is 3x our cost. Never go below floor.
-- Start every quote at list price (6x).
-- You have authority to negotiate down toward the floor based on:
-  * Order volume: larger orders (5+ kits) justify moving toward 4-5x
-  * High-volume signals (e.g. "200 kits/week") — move aggressively toward floor to win the account
-  * Repeat/serious buyers: reward commitment
-  * Never volunteer a discount — only move if they push back on price
-  * Never reveal our cost or markup structure
-  * Retatrutide 10mg at $99.99/kit is already exceptional market pricing — hold firm here, don't discount unless volume is very high (20+ kits)
+- Start every quote at list price. Never volunteer a discount — only move if they push back.
+- Never reveal our cost or markup structure.
+- Your discount authority is CAPPED BY ORDER SIZE (discount = percent off list price):
+  * Under 25 kits:   max 5% off list
+  * 25 to 49 kits:   max 10% off list
+  * 50 to 100 kits:  max 15% off list
+  * Over 100 kits:   DO NOT quote a discount or place the order — hand off (see below)
+- Move in small increments — only reach the cap if the buyer really pushes. Do not open
+  at the cap.
+- Retatrutide 10mg is already exceptional market pricing — hold firm, discount only at
+  high volume and never past the cap above.
+
+LARGE ORDER HANDOFF (over 100 kits):
+- If the buyer wants MORE THAN 100 kits, do NOT negotiate a price and do NOT place the order.
+- Use action "handoff". Politely tell them an order this size is handled by our senior team
+  directly, and they will be contacted shortly. You may confirm what product/quantity they
+  want and how to reach them, but do NOT quote a discounted price.
 
 CATALOG (List Price = 6x cost | Floor = 3x cost):
 {catalog}
@@ -145,7 +156,7 @@ Keep replies short and choppy — this is WhatsApp, and you are a Chinese sales 
 simple English. Round prices to 2 decimal places.
 Always end with a JSON block:
 {{
-  "action": "collect" | "confirm" | "place" | "send_price_list" | "invalid",
+  "action": "collect" | "confirm" | "place" | "send_price_list" | "handoff" | "invalid",
   "product": "...",
   "spec": "...",
   "quantity_kits": 0,
@@ -326,21 +337,41 @@ def _handle_ordering(phone: str, conversation: list[dict], existing_lead: dict |
             print(f"[MessagingAgent] _send_price_list crashed: {e!r}")
         return ""  # empty reply → no text, just the document
 
-    # ── Hard floor guardrail ──────────────────────────────────────────────
-    # Regardless of what Claude quoted, never let an order be recorded below
-    # the 3x-cost floor. This is the code backstop behind the prompt rules.
-    if action in ("place", "confirm") and product and quantity_kits:
+    # Normalize quantity for the guardrails below.
+    try:
+        qty = float(quantity_kits or 0)
+    except (TypeError, ValueError):
+        qty = 0.0
+
+    # ── Large-order handoff (over 100 kits) ───────────────────────────────
+    # Orders this size are never auto-quoted or placed — a human takes over.
+    if action == "handoff" or qty > HANDOFF_KITS:
+        _notify_handoff(phone, product, spec, quantity_kits)
+        if action == "handoff" and reply:
+            return reply  # use Claude's own handoff wording when it chose to hand off
+        return ("This is a large order — our senior team handles these directly. "
+                "They will reach out to you shortly to take care of everything. "
+                "What is the best way to contact you?")
+
+    # ── Hard pricing guardrail (volume-capped discount + absolute floor) ───
+    # Regardless of what Claude quoted, never let an order be recorded below the
+    # volume-based discount cap or the 3x-cost floor. Code backstop for the prompt.
+    if action in ("place", "confirm") and product and qty:
+        list_per_kit = get_list_price(product, spec)
         floor_per_kit = get_floor_price(product, spec)
-        if floor_per_kit is not None:
-            floor_total = round(floor_per_kit * float(quantity_kits), 2)
-            if float(total_price or 0) < floor_total - 0.01:
-                print(f"[Guardrail] Below-floor quote blocked: {product} {spec} "
-                      f"x{quantity_kits} @ ${total_price} < floor ${floor_total}")
+        cap = max_discount_for_qty(qty)  # 0.05 / 0.10 / 0.15 (qty <= 100 here)
+        if list_per_kit is not None and floor_per_kit is not None and cap is not None:
+            capped_per_kit = round(list_per_kit * (1 - cap), 2)
+            min_per_kit = max(floor_per_kit, capped_per_kit)  # higher (stricter) wins
+            min_total = round(min_per_kit * qty, 2)
+            if float(total_price or 0) < min_total - 0.01:
+                print(f"[Guardrail] Quote below allowed min: {product} {spec} x{qty} "
+                      f"@ ${total_price} < ${min_total} (cap {int(cap*100)}% off list)")
                 # Override the buyer-facing reply and do NOT place the order.
-                return (f"Best price I can do: ${floor_per_kit:.2f} per kit. "
-                        f"{int(quantity_kits)} kit = ${floor_total:.2f}, plus shipping. Okay for you?")
+                return (f"Best price I can do for {int(qty)} kits is ${min_per_kit:.2f} per kit. "
+                        f"{int(qty)} kits = ${min_total:.2f}, plus shipping. Okay for you?")
         else:
-            print(f"[Guardrail] No floor match for {product!r} {spec!r} — allowing (cannot verify)")
+            print(f"[Guardrail] No price match for {product!r} {spec!r} — allowing (cannot verify)")
 
     if action == "place" and lead_id and product and quantity_kits:
         try:
@@ -445,6 +476,25 @@ def _send_price_list(to: str) -> None:
     except Exception as e:
         print(f"[PriceList] XLSX send failed: {e!r} — sending text fallback")
         _send_text_price_list(from_number, to)
+
+
+def _notify_handoff(lead_phone: str, product: str, spec: str, quantity_kits) -> None:
+    """Alert the sales team that a large order (>100 kits) needs manual handling.
+    Sends to HANDOFF_NOTIFY_NUMBER if configured; always logs regardless."""
+    summary = (f"LARGE ORDER HANDOFF — {quantity_kits} kits of "
+               f"{(product + ' ' + spec).strip() or 'unspecified'} from {lead_phone}. "
+               f"Reply to the lead directly.")
+    print(f"[Handoff] {summary}")
+    dest = settings.handoff_notify_number
+    if not dest:
+        print("[Handoff] HANDOFF_NOTIFY_NUMBER not set — no alert sent (lead still notified).")
+        return
+    try:
+        from_number = settings.twilio_whatsapp_from if "whatsapp" in dest else settings.twilio_phone_number
+        msg = twilio_client.messages.create(body=summary, from_=from_number, to=dest)
+        print(f"[Handoff] Alert sent to {dest}: SID={msg.sid}")
+    except Exception as e:
+        print(f"[Handoff] Alert send failed: {e!r}")
 
 
 def _send_text_price_list(from_number: str, to: str) -> None:

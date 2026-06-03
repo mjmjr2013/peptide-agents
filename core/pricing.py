@@ -210,6 +210,31 @@ def get_floor_price(product: str, spec: str = "") -> float | None:
     return get_price(item["cost"], MARKUP_FLOOR)
 
 
+def get_list_price(product: str, spec: str = "") -> float | None:
+    """Per-kit list price (6x cost or override) for a product/spec, or None if unmatched."""
+    item = find_item(product, spec)
+    if item is None:
+        return None
+    return get_price(item["cost"], MARKUP_START, item.get("list_override"))
+
+
+# Volume-based discount caps (percent off list price). Orders over 100 kits are
+# handed off to a human and not auto-quoted.
+HANDOFF_KITS = 100
+
+
+def max_discount_for_qty(kits: float) -> float | None:
+    """Max allowed discount fraction off list for an order size.
+    Returns None for orders over HANDOFF_KITS (must be handed off, not quoted)."""
+    if kits > HANDOFF_KITS:
+        return None
+    if kits < 25:
+        return 0.05
+    if kits < 50:
+        return 0.10
+    return 0.15  # 50..100 kits
+
+
 def get_catalog_text() -> str:
     """Returns a formatted pricing table for use in Claude prompts."""
     lines = ["Product | Spec | List Price | Floor Price (never go below)"]

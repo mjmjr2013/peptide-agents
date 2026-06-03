@@ -38,6 +38,10 @@ class Settings:
     # Supplier
     supplier_whatsapp: str = os.environ.get("SUPPLIER_WHATSAPP", "")
 
+    # Sales — where to alert when a large order (>100 kits) needs manual handoff.
+    # Accepts a plain SMS number (+1...) or a WhatsApp address (whatsapp:+1...).
+    handoff_notify_number: str = os.environ.get("HANDOFF_NOTIFY_NUMBER", "")
+
     # Business
     company_name: str = os.environ.get("COMPANY_NAME", "PeptideCo")
 
