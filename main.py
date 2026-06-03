@@ -91,14 +91,43 @@ def start_webhook_server(port: int = 5000):
 
         @app.route("/price-list.xlsx")
         def price_list_xlsx():
-            from flask import send_file
             from core.price_image import XLSX_PATH, generate_price_list_xlsx
             if not XLSX_PATH.exists():
                 generate_price_list_xlsx()
-            return send_file(str(XLSX_PATH),
-                             mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                             as_attachment=True,
-                             download_name="Northline_Price_List.xlsx")
+            from flask import Response
+            from urllib.parse import quote
+            with open(str(XLSX_PATH), "rb") as f:
+                data = f.read()
+            # Display the file with a Chinese name in WhatsApp:
+            # 北线集团研究肽价格表 = "Northline Group Research Peptide Price List".
+            # RFC 5987 filename* carries the UTF-8 name; ASCII filename is a fallback.
+            cn_name = "北线集团研究肽价格表.xlsx"
+            disposition = (
+                "attachment; filename=\"price-list.xlsx\"; "
+                f"filename*=UTF-8''{quote(cn_name)}"
+            )
+            return Response(
+                data,
+                status=200,
+                headers={
+                    "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "Content-Length": str(len(data)),
+                    "Content-Disposition": disposition,
+                },
+            )
+
+        @app.route("/price-list.xls")
+        def price_list_xls():
+            from flask import Response
+            from core.price_image import XLS_PATH, generate_price_list_xls
+            if not XLS_PATH.exists():
+                generate_price_list_xls()
+            with open(str(XLS_PATH), "rb") as f:
+                data = f.read()
+            return Response(data, status=200, headers={
+                "Content-Type": "application/vnd.ms-excel",
+                "Content-Length": str(len(data)),
+            })
 
         @app.route("/price-list.pdf")
         def price_list_pdf():
