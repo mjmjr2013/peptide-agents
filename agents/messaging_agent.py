@@ -11,7 +11,7 @@ from twilio.twiml.messaging_response import MessagingResponse
 
 from core.claude_client import claude
 from core.airtable_client import airtable
-from core.pricing import get_catalog_text, get_price_list_messages, MARKUP_START, MARKUP_FLOOR
+from core.pricing import get_catalog_text, get_price_list_messages, get_floor_price, MARKUP_START, MARKUP_FLOOR
 from config import settings
 
 QUALIFY_PROMPT = """You are a professional sales qualifier for Northline Group, a peptide research supply company.
@@ -70,9 +70,11 @@ CRITICAL: Do NOT ask them to qualify themselves. Do NOT ask what type of buyer t
 
 SHIPPING (tell them when they ask, or when confirming an order):
 - We ship from China only. No US fulfillment.
-- Standard shipping: 3-4 weeks. (This is the default.)
-- Expedited shipping: 10 days or less, for a higher fee. Offer this if buyer wants faster.
-- Quote expedited fee based on order size if they ask — it is extra on top of product price.
+- Standard shipping: $95 flat, 4 weeks or less. (This is the default.)
+  * FREE standard shipping when product total is over $1000 — no $95 fee.
+- Expedited shipping: $235 flat, 10 days or less.
+- Shipping fee is ADDED on top of the product total. Always state shipping fee
+  and the final total (product + shipping) when confirming the order.
 
 PAYMENT (crypto only):
 - We take crypto only. USDT or BTC. No card, no bank, no PayPal.
@@ -126,11 +128,15 @@ FLOW:
    use action "send_price_list" with an EMPTY reply_message — no text at all
 3. If they ask about a specific named product, quote the list price per kit and total directly
 4. If they push back on price, negotiate — move in increments, not all at once
-5. When confirming the order, state shipping: standard 3-4 weeks from China, or
-   expedited 10 days or less for higher fee. Ask which they want.
+5. When confirming the order, state shipping: standard $95 (FREE if product total
+   over $1000), 4 weeks or less; or expedited $235, 10 days or less. Ask which.
 6. Payment is crypto only — USDT or BTC. Ask which coin. Give the matching wallet
    address only after price + shipping are agreed. Ship after payment confirmed.
 7. Once price, shipping, and payment coin are agreed, confirm full order details and place it
+
+NOTE: in the JSON, "total_price" is the PRODUCT subtotal only (price per kit x kits),
+BEFORE shipping. State the shipping fee and final total (product + shipping) in your
+reply_message, but keep total_price as the product subtotal.
 
 Keep replies short and choppy — this is WhatsApp, and you are a Chinese sales rep speaking
 simple English. Round prices to 2 decimal places.
@@ -316,6 +322,22 @@ def _handle_ordering(phone: str, conversation: list[dict], existing_lead: dict |
         except Exception as e:
             print(f"[MessagingAgent] _send_price_list crashed: {e!r}")
         return ""  # empty reply → no text, just the document
+
+    # ── Hard floor guardrail ──────────────────────────────────────────────
+    # Regardless of what Claude quoted, never let an order be recorded below
+    # the 3x-cost floor. This is the code backstop behind the prompt rules.
+    if action in ("place", "confirm") and product and quantity_kits:
+        floor_per_kit = get_floor_price(product, spec)
+        if floor_per_kit is not None:
+            floor_total = round(floor_per_kit * float(quantity_kits), 2)
+            if float(total_price or 0) < floor_total - 0.01:
+                print(f"[Guardrail] Below-floor quote blocked: {product} {spec} "
+                      f"x{quantity_kits} @ ${total_price} < floor ${floor_total}")
+                # Override the buyer-facing reply and do NOT place the order.
+                return (f"Best price I can do: ${floor_per_kit:.2f} per kit. "
+                        f"{int(quantity_kits)} kit = ${floor_total:.2f}, plus shipping. Okay for you?")
+        else:
+            print(f"[Guardrail] No floor match for {product!r} {spec!r} — allowing (cannot verify)")
 
     if action == "place" and lead_id and product and quantity_kits:
         try:

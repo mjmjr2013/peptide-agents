@@ -176,6 +176,40 @@ def get_price(cost: float, markup: float, list_override: float | None = None) ->
     return round(cost * markup, 2)
 
 
+def _norm(s: str) -> str:
+    import re
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+
+def find_item(product: str, spec: str = "") -> dict | None:
+    """Best-effort match of a Claude-supplied product/spec to a CATALOG row.
+    Returns the matching dict or None if it can't be confidently matched."""
+    np = _norm(product)
+    if not np:
+        return None
+    candidates = [it for it in CATALOG if _norm(it["product"]) == np]
+    if not candidates:
+        candidates = [it for it in CATALOG
+                      if np in _norm(it["product"]) or _norm(it["product"]) in np]
+    nspec = _norm(spec)
+    if nspec:
+        for it in candidates:  # catalog order: smaller doses first, so prefix match is safe
+            nis = _norm(it["spec"])
+            if nis.startswith(nspec) or nspec == nis or nspec in nis:
+                return it
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
+
+
+def get_floor_price(product: str, spec: str = "") -> float | None:
+    """Per-kit floor price (3x cost) for a product/spec, or None if unmatched."""
+    item = find_item(product, spec)
+    if item is None:
+        return None
+    return get_price(item["cost"], MARKUP_FLOOR)
+
+
 def get_catalog_text() -> str:
     """Returns a formatted pricing table for use in Claude prompts."""
     lines = ["Product | Spec | List Price | Floor Price (never go below)"]
