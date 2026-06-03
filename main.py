@@ -116,6 +116,14 @@ def start_webhook_server(port: int = 5000):
                 },
             )
 
+        # WhatsApp/Twilio displays the document name from the URL's last path
+        # segment and ignores Content-Disposition. Serving the file at a Chinese
+        # path is the only reliable way to make the received file show a Chinese
+        # name (北线集团研究肽价格表 = "Northline Group Research Peptide Price List").
+        @app.route("/北线集团研究肽价格表.xlsx")
+        def price_list_xlsx_cn():
+            return price_list_xlsx()
+
         @app.route("/price-list.xls")
         def price_list_xls():
             from flask import Response

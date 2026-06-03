@@ -349,9 +349,15 @@ def _parse_json(text: str) -> dict:
 
 # ── Twilio helpers ─────────────────────────────────────────────────────────────
 
-# Public Railway URL — serves the bilingual XLSX price list as a downloadable file
+# Public Railway URL — serves the bilingual XLSX price list as a downloadable file.
+# WhatsApp shows the document name from the URL's last path segment, so we serve
+# (and link to) a Chinese-named path: 北线集团研究肽价格表.xlsx
+# ("Northline Group Research Peptide Price List").
+from urllib.parse import quote as _urlquote
+
 _BASE_URL = "https://peptide-agents-production.up.railway.app"
-PRICE_LIST_XLSX_URL = f"{_BASE_URL}/price-list.xlsx"
+_CN_XLSX_FILENAME = "北线集团研究肽价格表.xlsx"
+PRICE_LIST_XLSX_URL = f"{_BASE_URL}/{_urlquote(_CN_XLSX_FILENAME)}"
 
 
 def _send_price_list(to: str) -> None:
