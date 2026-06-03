@@ -102,6 +102,9 @@ PRICING RULES:
   * Over 100 kits:   DO NOT quote a discount or place the order — hand off (see below)
 - Move in small increments — only reach the cap if the buyer really pushes. Do not open
   at the cap.
+- NEVER tell the buyer the discount percentage. Do NOT say "5% off", "10% off", "X% discount",
+  or mention any percentage at all. Just give the new lower PRICE as a dollar amount
+  (per kit and/or total). E.g. say "Best I can do is $102.20 per kit" — NOT "5% off, $102.20".
 - Retatrutide 10mg is already exceptional market pricing — hold firm, discount only at
   high volume and never past the cap above.
 
