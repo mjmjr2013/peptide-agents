@@ -89,40 +89,38 @@ def start_webhook_server(port: int = 5000):
                 generate_price_list_image_cn()
             return send_file(str(CN_OUTPUT_PATH), mimetype="image/png")
 
-        @app.route("/price-list.xlsx")
-        def price_list_xlsx():
+        def _xlsx_bytes():
             from core.price_image import XLSX_PATH, generate_price_list_xlsx
             if not XLSX_PATH.exists():
                 generate_price_list_xlsx()
-            from flask import Response
-            from urllib.parse import quote
             with open(str(XLSX_PATH), "rb") as f:
-                data = f.read()
-            # Display the file with a Chinese name in WhatsApp:
-            # 北线集团研究肽价格表 = "Northline Group Research Peptide Price List".
-            # RFC 5987 filename* carries the UTF-8 name; ASCII filename is a fallback.
-            cn_name = "北线集团研究肽价格表.xlsx"
-            disposition = (
-                "attachment; filename=\"price-list.xlsx\"; "
-                f"filename*=UTF-8''{quote(cn_name)}"
-            )
-            return Response(
-                data,
-                status=200,
-                headers={
-                    "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    "Content-Length": str(len(data)),
-                    "Content-Disposition": disposition,
-                },
-            )
+                return f.read()
 
-        # WhatsApp/Twilio displays the document name from the URL's last path
-        # segment and ignores Content-Disposition. Serving the file at a Chinese
-        # path is the only reliable way to make the received file show a Chinese
-        # name (北线集团研究肽价格表 = "Northline Group Research Peptide Price List").
+        _XLSX_CT = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+        @app.route("/price-list.xlsx")
+        def price_list_xlsx():
+            from flask import Response
+            data = _xlsx_bytes()
+            return Response(data, status=200, headers={
+                "Content-Type": _XLSX_CT,
+                "Content-Length": str(len(data)),
+            })
+
+        # WhatsApp/Twilio derives the displayed document name from the media URL's
+        # last path segment. We must NOT send a Content-Disposition with an ASCII
+        # filename here — Twilio prefers it and would override the Chinese name.
+        # Serving at this Chinese path with no Content-Disposition is what makes
+        # the received file show 北线集团研究肽价格表.xlsx
+        # ("Northline Group Research Peptide Price List").
         @app.route("/北线集团研究肽价格表.xlsx")
         def price_list_xlsx_cn():
-            return price_list_xlsx()
+            from flask import Response
+            data = _xlsx_bytes()
+            return Response(data, status=200, headers={
+                "Content-Type": _XLSX_CT,
+                "Content-Length": str(len(data)),
+            })
 
         @app.route("/price-list.xls")
         def price_list_xls():
