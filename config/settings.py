@@ -42,6 +42,18 @@ class Settings:
     # Accepts a plain SMS number (+1...) or a WhatsApp address (whatsapp:+1...).
     handoff_notify_number: str = os.environ.get("HANDOFF_NOTIFY_NUMBER", "")
 
+    # Operators — the human(s) who supervise large orders (>100 kits). Inbound
+    # messages from these numbers are treated as control/relay commands, NOT as
+    # prospect messages. Large-order alerts go to all of them, and their replies
+    # are relayed (auto-phrased in persona) back to the prospect in the same
+    # WhatsApp thread. Comma-separated. Use the whatsapp: scheme if the bot runs
+    # on WhatsApp, e.g. "whatsapp:+14805551234,whatsapp:+14806265678". Matching
+    # against inbound is by the last 10 digits, so the scheme is optional for
+    # detection but required for outbound delivery on WhatsApp.
+    operator_numbers: list[str] = [
+        n.strip() for n in os.environ.get("OPERATOR_NUMBERS", "").split(",") if n.strip()
+    ]
+
     # Business
     company_name: str = os.environ.get("COMPANY_NAME", "PeptideCo")
 

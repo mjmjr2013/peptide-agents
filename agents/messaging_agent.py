@@ -4,6 +4,7 @@ Messaging Agent — qualifies inbound leads via SMS, then takes their order inli
 Full flow: qualify → collect order → confirm → write to Airtable → notify fulfillment.
 """
 import json
+import re
 from datetime import datetime, timezone
 
 from twilio.rest import Client as TwilioClient
@@ -46,6 +47,30 @@ Always end with a JSON block:
 # wallet addresses here when provided; the prompt below reads from these constants.
 USDT_WALLET_ADDRESS = "PLACEHOLDER_USDT_TRC20_ADDRESS"   # USDT (TRC20)
 BTC_WALLET_ADDRESS = "PLACEHOLDER_BTC_ADDRESS"           # BTC
+
+
+# ── Boss relay (large-order human-in-the-loop) ───────────────────────────────
+# When a large order (>100 kits) is in "boss mode", the operator's instruction is
+# turned into a natural, in-persona WhatsApp message to the prospect with this
+# prompt. The prospect never learns a human stepped in.
+_RELAY_PROMPT = """You are the Northline Group sales rep — a Chinese research-peptide lab — \
+mid-deal with a LARGE-VOLUME customer (over 100 kits) on WhatsApp. On big orders your BOSS \
+decides the price; you relay his decisions in your own voice.
+
+Your boss has just given you an instruction (shown in the final note). Turn it into a short, \
+natural WhatsApp message to the customer.
+
+RULES:
+- Speak as the rep: Chinese sales rep, English as second language — clear, mostly grammatical,
+  warm, light non-native flavor. You may say "dear" occasionally. 1-2 short lines.
+- NEVER reveal there is a separate person/system or that you are relaying. To the customer it
+  is just you, continuing the chat.
+- NEVER state a discount percentage. Give prices only as dollar amounts (per kit and/or total).
+- Do not invent numbers. Only use prices/terms the boss gave you. If the boss gave a price,
+  state it plainly and ask if it works / what's next.
+- If the boss is confirming payment, shipping, or wallet info, convey exactly that.
+
+Reply with ONLY the message text to send the customer — no quotes, no JSON, no labels."""
 
 
 def _build_order_prompt() -> str:
@@ -108,11 +133,18 @@ PRICING RULES:
 - Retatrutide 10mg is already exceptional market pricing — hold firm, discount only at
   high volume and never past the cap above.
 
-LARGE ORDER HANDOFF (over 100 kits):
-- If the buyer wants MORE THAN 100 kits, do NOT negotiate a price and do NOT place the order.
-- Use action "handoff". Politely tell them an order this size is handled by our senior team
-  directly, and they will be contacted shortly. You may confirm what product/quantity they
-  want and how to reach them, but do NOT quote a discounted price.
+LARGE ORDER (over 100 kits) — CHECK WITH BOSS FIRST:
+- If the buyer wants MORE THAN 100 kits, you do NOT have authority to set the price on a
+  volume this big. Do NOT quote any price or discount, and do NOT place the order.
+- Use action "handoff". In reply_message, do NOT name any price or percentage. Instead stall
+  warmly and naturally: tell them this is big volume so you must confirm best price with your
+  boss, and you will come right back to them. Keep it short, 1-2 lines.
+  e.g. "This is big volume, dear. Let me confirm best price with my boss. One moment, I come
+  back to you quick." or "For this quantity I must check with my boss for special price. Give
+  me a moment, I get right back to you."
+- Still capture product, spec, and quantity_kits in the JSON. Leave total_price 0.
+- After you stall, a human will feed you the approved price and you continue the chat. Until
+  then, do not promise anything specific on price.
 
 CATALOG (List Price = 6x cost | Floor = 3x cost):
 {catalog}
@@ -172,7 +204,12 @@ twilio_client = TwilioClient(settings.twilio_account_sid, settings.twilio_auth_t
 
 # ── Conversation state ─────────────────────────────────────────────────────────
 _conversations: dict[str, list[dict]] = {}
-_lead_stage: dict[str, str] = {}  # phone -> "qualifying" | "ordering"
+_lead_stage: dict[str, str] = {}  # phone -> "qualifying" | "ordering" | "manual"
+
+# Prospects (>100 kits) currently under operator control. phone -> details dict.
+# While a prospect is in here their stage is "manual": the auto-agent will not set
+# prices; the operator drives the conversation via relay.
+_pending_handoffs: dict[str, dict] = {}
 
 
 def get_conversation(phone: str) -> list[dict]:
@@ -189,6 +226,179 @@ def get_stage(phone: str) -> str:
 
 def set_stage(phone: str, stage: str):
     _lead_stage[phone] = stage
+
+
+# ── Operator (boss) relay helpers ────────────────────────────────────────────
+
+def _digits(phone: str) -> str:
+    """All digits in a phone string (drops 'whatsapp:', '+', spaces, etc.)."""
+    return re.sub(r"\D", "", phone or "")
+
+
+def _digits10(phone: str) -> str:
+    """Last 10 digits — the comparable core of a US number."""
+    d = _digits(phone)
+    return d[-10:] if len(d) >= 10 else d
+
+
+def _short(phone: str) -> str:
+    """Last 4 digits, for compact display/targeting (e.g. '6814')."""
+    d = _digits(phone)
+    return d[-4:] if len(d) >= 4 else d
+
+
+def _is_operator(phone: str) -> bool:
+    """True if this inbound number belongs to a supervising operator."""
+    pd = _digits10(phone)
+    if not pd:
+        return False
+    return any(_digits10(n) == pd for n in settings.operator_numbers)
+
+
+def _sole_pending() -> str | None:
+    """The one prospect under operator control, if exactly one is pending."""
+    return next(iter(_pending_handoffs)) if len(_pending_handoffs) == 1 else None
+
+
+def _resolve_target(token: str) -> str | None:
+    """Match an operator-supplied number fragment to a pending prospect by suffix.
+    Accepts last-4, last-10, or a full number."""
+    t = _digits(token)
+    if len(t) < 4:
+        return None
+    for p in _pending_handoffs:
+        pd = _digits(p)
+        if pd.endswith(t) or t.endswith(pd):
+            return p
+    return None
+
+
+def _send_to_prospect(phone: str, text: str) -> None:
+    """Send a message to a prospect on their original channel."""
+    from_number = settings.twilio_whatsapp_from if "whatsapp" in phone else settings.twilio_phone_number
+    msg = twilio_client.messages.create(body=text, from_=from_number, to=phone)
+    print(f"[Relay] To prospect {phone}: {text!r} SID={msg.sid}")
+
+
+def _notify_operators(text: str) -> None:
+    """Alert all configured operators. Logs (and no-ops) if none are set."""
+    nums = settings.operator_numbers
+    if not nums:
+        print(f"[Operator] OPERATOR_NUMBERS not set — would have alerted: {text}")
+        return
+    for dest in nums:
+        try:
+            from_number = settings.twilio_whatsapp_from if "whatsapp" in dest else settings.twilio_phone_number
+            msg = twilio_client.messages.create(body=text, from_=from_number, to=dest)
+            print(f"[Operator] Alerted {dest}: SID={msg.sid}")
+        except Exception as e:
+            print(f"[Operator] Alert to {dest} failed: {e!r}")
+
+
+def _enter_manual_mode(prospect_phone: str, product: str, spec: str,
+                       quantity_kits, conversation: list[dict]) -> None:
+    """Put a prospect under operator control and ping the operators with the ask."""
+    set_stage(prospect_phone, "manual")
+    _pending_handoffs[prospect_phone] = {
+        "product": product, "spec": spec, "quantity_kits": quantity_kits,
+    }
+    last_user = next((m["content"] for m in reversed(conversation) if m.get("role") == "user"), "")
+    item = (f"{product} {spec}".strip()) or "unspecified"
+    summary = (
+        f"LARGE ORDER — {quantity_kits} kits {item}\n"
+        f"From {prospect_phone}\n"
+        f"They said: \"{last_user}\"\n\n"
+        f"Reply here with the price/answer and I'll relay it (auto-phrased). "
+        f"'say: <text>' to send verbatim. 'release {_short(prospect_phone)}' to hand back to auto."
+    )
+    _notify_operators(summary)
+
+
+def _relay_via_persona(prospect_phone: str, directive: str) -> str:
+    """Turn the operator's instruction into an in-persona message to the prospect."""
+    conv = get_conversation(prospect_phone)
+    relay_msgs = conv + [{
+        "role": "user",
+        "content": (
+            f"(INTERNAL NOTE — this is NOT from the customer. Your boss instructs you: "
+            f"{directive}. Write the next WhatsApp message to the customer to convey this.)"
+        ),
+    }]
+    try:
+        response = claude.create(system=_RELAY_PROMPT, messages=relay_msgs, max_tokens=300)
+        out = _extract_text(response).strip()
+        return out or directive
+    except Exception as e:
+        print(f"[Relay] persona generation failed: {e!r} — sending directive verbatim")
+        return directive
+
+
+def _handle_operator(operator_phone: str, body: str) -> str:
+    """Process a control message from an operator. Returns a confirmation that is
+    sent back to the operator (the relay to the prospect is a separate outbound)."""
+    text = (body or "").strip()
+    if not text:
+        return "Empty message. Reply with the price/answer to relay, or 'status'."
+
+    low = text.lower()
+
+    # status / list pending
+    if low in ("status", "pending", "?", "list pending"):
+        if not _pending_handoffs:
+            return "No large orders waiting."
+        lines = []
+        for p, d in _pending_handoffs.items():
+            item = f"{d.get('product','')} {d.get('spec','')}".strip() or "unspecified"
+            lines.append(f"  {_short(p)} — {d.get('quantity_kits')} kits {item}")
+        return "Large orders waiting:\n" + "\n".join(lines)
+
+    # release a prospect back to the auto-agent
+    if low.startswith("release"):
+        rest = text[len("release"):].strip()
+        target = _resolve_target(rest) if rest else _sole_pending()
+        if not target:
+            avail = ", ".join(_short(p) for p in _pending_handoffs) or "none"
+            return f"Which prospect? Pending: {avail}. Use 'release <last4>'."
+        _pending_handoffs.pop(target, None)
+        set_stage(target, "ordering")
+        return f"Released {_short(target)} back to the auto-agent."
+
+    # verbatim send (skip persona rephrasing)
+    verbatim = False
+    if low.startswith("say:"):
+        verbatim = True
+        text = text[4:].strip()
+
+    # optional leading target token (e.g. "6814 do $83/kit")
+    target = None
+    message = text
+    parts = text.split(maxsplit=1)
+    if parts:
+        maybe = _resolve_target(parts[0])
+        if maybe:
+            target = maybe
+            message = parts[1] if len(parts) > 1 else ""
+    if target is None:
+        target = _sole_pending()
+
+    if target is None:
+        avail = ", ".join(_short(p) for p in _pending_handoffs) or "none"
+        return (f"Multiple/no pending orders — prefix the prospect's last-4 digits. "
+                f"Pending: {avail}.")
+    if not message:
+        return "No message text to relay. Reply with the price/answer to send."
+
+    relay_text = message if verbatim else _relay_via_persona(target, message)
+    try:
+        _send_to_prospect(target, relay_text)
+    except Exception as e:
+        print(f"[Relay] send to prospect failed: {e!r}")
+        return f"Failed to send to {_short(target)}: {e}"
+
+    conv = get_conversation(target)
+    conv.append({"role": "assistant", "content": relay_text})
+    save_conversation(target, conv)
+    return f"Sent to {_short(target)}: {relay_text}"
 
 
 # ── Core logic ─────────────────────────────────────────────────────────────────
@@ -225,6 +435,7 @@ def handle_inbound(from_phone: str, body: str, name: str = "") -> str:
     if body.strip().upper() == "RESET":
         _conversations.pop(from_phone, None)
         _lead_stage.pop(from_phone, None)
+        _pending_handoffs.pop(from_phone, None)
         try:
             existing = airtable.find_lead_by_phone(from_phone)
             if existing:
@@ -235,8 +446,26 @@ def handle_inbound(from_phone: str, body: str, name: str = "") -> str:
         print(f"[MessagingAgent] Reset state for {from_phone}")
         return "Reset. You're a fresh lead — say hi to start over."
 
+    # Operator (boss) control messages are not prospect messages — route them to
+    # the relay handler and never create leads / negotiate for them.
+    if _is_operator(from_phone):
+        print(f"[MessagingAgent] Operator command from {from_phone}: {body!r}")
+        return _handle_operator(from_phone, body)
+
     conversation = get_conversation(from_phone)
     stage = get_stage(from_phone)
+
+    # While a prospect is under operator control, do NOT let the auto-agent reply.
+    # Capture their message, forward it to the operators, and stay silent — the
+    # operator drives the conversation via relay.
+    if stage == "manual":
+        conversation.append({"role": "user", "content": body})
+        save_conversation(from_phone, conversation)
+        _notify_operators(f"[{_short(from_phone)}] customer says: \"{body}\"\n"
+                          f"(Reply to relay. 'release {_short(from_phone)}' to hand back to auto.)")
+        print(f"[MessagingAgent] Manual mode — forwarded prospect msg to operators")
+        return ""  # operator will craft the reply
+
     existing_lead = airtable.find_lead_by_phone(from_phone)
 
     # If lead is already Qualified or Converted, go straight to ordering
@@ -346,15 +575,14 @@ def _handle_ordering(phone: str, conversation: list[dict], existing_lead: dict |
     except (TypeError, ValueError):
         qty = 0.0
 
-    # ── Large-order handoff (over 100 kits) ───────────────────────────────
-    # Orders this size are never auto-quoted or placed — a human takes over.
+    # ── Large order (over 100 kits) → operator-controlled relay ────────────
+    # Orders this size are never auto-quoted or placed. Stall the prospect in the
+    # same chat, hand control to a human operator, and let them set the price.
     if action == "handoff" or qty > HANDOFF_KITS:
-        _notify_handoff(phone, product, spec, quantity_kits)
-        if action == "handoff" and reply:
-            return reply  # use Claude's own handoff wording when it chose to hand off
-        return ("This is a large order — our senior team handles these directly. "
-                "They will reach out to you shortly to take care of everything. "
-                "What is the best way to contact you?")
+        _enter_manual_mode(phone, product, spec, quantity_kits, conversation)
+        # Use Claude's stall wording if it produced one; otherwise a safe default.
+        return reply or ("This is big volume, dear. Let me confirm best price with my boss. "
+                         "One moment — I come back to you quick.")
 
     # ── Hard pricing guardrail (volume-capped discount + absolute floor) ───
     # Regardless of what Claude quoted, never let an order be recorded below the
@@ -479,25 +707,6 @@ def _send_price_list(to: str) -> None:
     except Exception as e:
         print(f"[PriceList] XLSX send failed: {e!r} — sending text fallback")
         _send_text_price_list(from_number, to)
-
-
-def _notify_handoff(lead_phone: str, product: str, spec: str, quantity_kits) -> None:
-    """Alert the sales team that a large order (>100 kits) needs manual handling.
-    Sends to HANDOFF_NOTIFY_NUMBER if configured; always logs regardless."""
-    summary = (f"LARGE ORDER HANDOFF — {quantity_kits} kits of "
-               f"{(product + ' ' + spec).strip() or 'unspecified'} from {lead_phone}. "
-               f"Reply to the lead directly.")
-    print(f"[Handoff] {summary}")
-    dest = settings.handoff_notify_number
-    if not dest:
-        print("[Handoff] HANDOFF_NOTIFY_NUMBER not set — no alert sent (lead still notified).")
-        return
-    try:
-        from_number = settings.twilio_whatsapp_from if "whatsapp" in dest else settings.twilio_phone_number
-        msg = twilio_client.messages.create(body=summary, from_=from_number, to=dest)
-        print(f"[Handoff] Alert sent to {dest}: SID={msg.sid}")
-    except Exception as e:
-        print(f"[Handoff] Alert send failed: {e!r}")
 
 
 def _send_text_price_list(from_number: str, to: str) -> None:
