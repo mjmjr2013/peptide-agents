@@ -123,28 +123,37 @@ PRICING RULES:
 - Your discount authority is CAPPED BY ORDER SIZE (discount = percent off list price):
   * Under 25 kits:   max 5% off list
   * 25 to 49 kits:   max 10% off list
-  * 50 to 100 kits:  max 15% off list
-  * Over 100 kits:   DO NOT quote a discount or place the order — hand off (see below)
+  * 50 kits or more: max 15% off list (this INCLUDES orders over 100 kits)
 - Move in small increments — only reach the cap if the buyer really pushes. Do not open
   at the cap.
+- Large orders are normal orders: quote them, negotiate within the cap above, and place
+  them yourself. You do NOT need anyone's approval to sell at or above your cap.
+- If the buyer wants a discount BIGGER than your cap allows (a price below your best capped
+  price) and will not accept your best, THAT is when you escalate — see LARGE ORDER below.
 - NEVER tell the buyer the discount percentage. Do NOT say "5% off", "10% off", "X% discount",
   or mention any percentage at all. Just give the new lower PRICE as a dollar amount
   (per kit and/or total). E.g. say "Best I can do is $102.20 per kit" — NOT "5% off, $102.20".
 - Retatrutide 10mg is already exceptional market pricing — hold firm, discount only at
   high volume and never past the cap above.
 
-LARGE ORDER (over 100 kits) — CHECK WITH BOSS FIRST:
-- If the buyer wants MORE THAN 100 kits, you do NOT have authority to set the price on a
-  volume this big. Do NOT quote any price or discount, and do NOT place the order.
-- Use action "handoff". In reply_message, do NOT name any price or percentage. Instead stall
-  warmly and naturally: tell them this is big volume so you must confirm best price with your
-  boss, and you will come right back to them. Keep it short, 1-2 lines.
-  e.g. "This is big volume, dear. Let me confirm best price with my boss. One moment, I come
-  back to you quick." or "For this quantity I must check with my boss for special price. Give
-  me a moment, I get right back to you."
-- Still capture product, spec, and quantity_kits in the JSON. Leave total_price 0.
+LARGE ORDER ESCALATION (buyer wants more discount than your cap):
+- You CAN and SHOULD quote and sell large orders (including over 100 kits) yourself. Quote at
+  list, then negotiate down within your cap (max 15% off for 50+ kits) and place the order
+  like normal. Do NOT escalate just because the order is big.
+- ONLY escalate when ALL of these are true:
+  1. The order is large (over 100 kits), AND
+  2. The buyer is demanding a price BELOW your best allowed (capped) price, AND
+  3. They will not accept your best capped price.
+- In that case use action "handoff". Do NOT name a price or percentage. Stall warmly and
+  naturally — tell them for this volume you must confirm a special price with your boss, and
+  you will come right back. Keep it short, 1-2 lines. e.g.
+  "This is big volume, dear. For a price like that I must check with my boss. One moment, I
+  come back to you quick." or "Let me ask my boss if we can do special price for this volume.
+  Give me a moment."
+- Still capture product, spec, and quantity_kits in the JSON. Leave total_price 0 on handoff.
 - After you stall, a human will feed you the approved price and you continue the chat. Until
   then, do not promise anything specific on price.
+- For orders UNDER 100 kits: never escalate. Just hold firm at your capped best price.
 
 CATALOG (List Price = 6x cost | Floor = 3x cost):
 {catalog}
@@ -575,14 +584,15 @@ def _handle_ordering(phone: str, conversation: list[dict], existing_lead: dict |
     except (TypeError, ValueError):
         qty = 0.0
 
-    # ── Large order (over 100 kits) → operator-controlled relay ────────────
-    # Orders this size are never auto-quoted or placed. Stall the prospect in the
+    # ── Escalation → operator-controlled relay ─────────────────────────────
+    # Large orders are quoted/negotiated normally; the agent only escalates when a
+    # buyer wants a discount beyond the cap. When it does, stall the prospect in the
     # same chat, hand control to a human operator, and let them set the price.
-    if action == "handoff" or qty > HANDOFF_KITS:
+    if action == "handoff":
         _enter_manual_mode(phone, product, spec, quantity_kits, conversation)
         # Use Claude's stall wording if it produced one; otherwise a safe default.
-        return reply or ("This is big volume, dear. Let me confirm best price with my boss. "
-                         "One moment — I come back to you quick.")
+        return reply or ("This is big volume, dear. For a price like that I must check with my "
+                         "boss. One moment — I come back to you quick.")
 
     # ── Hard pricing guardrail (volume-capped discount + absolute floor) ───
     # Regardless of what Claude quoted, never let an order be recorded below the
@@ -590,7 +600,7 @@ def _handle_ordering(phone: str, conversation: list[dict], existing_lead: dict |
     if action in ("place", "confirm") and product and qty:
         list_per_kit = get_list_price(product, spec)
         floor_per_kit = get_floor_price(product, spec)
-        cap = max_discount_for_qty(qty)  # 0.05 / 0.10 / 0.15 (qty <= 100 here)
+        cap = max_discount_for_qty(qty)  # 0.05 / 0.10 / 0.15 (15% for all 50+ kit orders)
         if list_per_kit is not None and floor_per_kit is not None and cap is not None:
             capped_per_kit = round(list_per_kit * (1 - cap), 2)
             min_per_kit = max(floor_per_kit, capped_per_kit)  # higher (stricter) wins

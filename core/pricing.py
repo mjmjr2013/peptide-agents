@@ -219,20 +219,21 @@ def get_list_price(product: str, spec: str = "") -> float | None:
 
 
 # Volume-based discount caps (percent off list price). Orders over 100 kits are
-# handed off to a human and not auto-quoted.
+# quoted and negotiated like any other order (same 15% cap as the 50+ tier); the
+# agent only escalates to a human when the buyer wants MORE than the cap allows.
 HANDOFF_KITS = 100
 
 
-def max_discount_for_qty(kits: float) -> float | None:
-    """Max allowed discount fraction off list for an order size.
-    Returns None for orders over HANDOFF_KITS (must be handed off, not quoted)."""
-    if kits > HANDOFF_KITS:
-        return None
+def max_discount_for_qty(kits: float) -> float:
+    """Max allowed discount fraction off list for an order size. The agent may
+    negotiate down to (but not past) this fraction without human approval. For
+    orders over 100 kits the cap is the same 15% — beyond that the agent escalates
+    to an operator rather than going lower on its own."""
     if kits < 25:
         return 0.05
     if kits < 50:
         return 0.10
-    return 0.15  # 50..100 kits
+    return 0.15  # 50+ kits, including 100+
 
 
 def get_catalog_text() -> str:
