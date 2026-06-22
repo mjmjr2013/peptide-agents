@@ -137,7 +137,7 @@ CATALOG: list[dict] = [
     {"product": "MGF", "spec": "2mg x10", "cost": 9.66},
     {"product": "PEG MGF", "spec": "2mg x10", "cost": 16.83},
     {"product": "Lipo-C", "spec": "10ml x10", "cost": 15.17},
-    {"product": "MIC (Lipo-C+B12)", "spec": "10mg x10", "cost": 49.66},
+    {"product": "MIC (Lipo-C+B12)", "spec": "10ml x10", "cost": 49.66},
     {"product": "Matrixyl", "spec": "10mg x10", "cost": 13.52},
     {"product": "Pinealon", "spec": "5mg x10", "cost": 12.41},
     {"product": "Pinealon", "spec": "10mg x10", "cost": 20.69},
