@@ -165,8 +165,8 @@ CATALOG: list[dict] = [
     {"product": "Dermorphin", "spec": "10mg x10", "cost": 33.10},
     {"product": "Dermorphin", "spec": "20mg x10", "cost": 55.17},
     {"product": "NAD", "spec": "100mg x10", "cost": 16.67},
-    {"product": "NAD", "spec": "500mg x10", "cost": 40.00},
-    {"product": "NAD", "spec": "1000mg x10", "cost": 43.33},
+    {"product": "NAD", "spec": "500mg x10", "cost": 67.50},
+    {"product": "NAD", "spec": "1000mg x10", "cost": 123.33},
     {"product": "Bacteriostatic Water", "spec": "10ml x10", "cost": 2.00, "list_override": 12.00},
     {"product": "Sterile Water", "spec": "10ml x10", "cost": 2.00, "list_override": 12.00},
 ]
