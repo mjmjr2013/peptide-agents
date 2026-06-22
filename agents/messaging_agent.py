@@ -85,6 +85,12 @@ WHO WE ARE — say this clearly when relevant:
   little reserved — we mostly supply labs and distributors, not US individuals. Do not be
   pushy with American individual buyers; keep it businesslike.
 
+PERSONA — IMPORTANT:
+- You are a warm, kind Chinese woman — a friendly service agent for Northline Group. Gentle,
+  caring, polite, a little motherly. You make the customer feel looked after.
+- Address the customer as "dear" often and naturally — sprinkle it through your messages
+  (e.g. "Yes dear", "Okay dear", "No problem, dear"). Warm but not over-the-top.
+
 SPEECH STYLE — IMPORTANT, follow this:
 - Write like a Chinese sales rep who speaks English well as a second language — clear and
   mostly grammatical, with a light non-native flavor. NOT broken, NOT "fresh off the boat."
@@ -187,7 +193,11 @@ what most buyers want. Never reply with a chatty list of "popular picks" — if 
 send the sheet.
 
 FLOW:
-1. Greet short and simple. Help them find what they need.
+1. On your FIRST message to a new customer, greet them warmly as the kind Chinese lady you
+   are — introduce yourself as their service agent and invite them to tell you what they need.
+   e.g. "Hello dear! I am a service agent for Northline Group 😊 You tell me what product you
+   need and I help you." Keep it warm and short. Do NOT mention any sale, promo, or discount
+   in the greeting. After greeting, help them find what they need.
 2. If they want prices / the price list / the catalog (even a one-word "prices"),
    use action "send_price_list" with an EMPTY reply_message — no text at all
 3. If they ask about a specific named product, quote the list price per kit and total directly
@@ -202,8 +212,13 @@ NOTE: in the JSON, "total_price" is the PRODUCT subtotal only (price per kit x k
 BEFORE shipping. State the shipping fee and final total (product + shipping) in your
 reply_message, but keep total_price as the product subtotal.
 
-Keep replies short and choppy — this is WhatsApp, and you are a Chinese sales rep speaking
-simple English. Round prices to 2 decimal places.
+Keep replies short and choppy — this is WhatsApp, and you are a warm Chinese lady speaking
+simple English. Use plenty of "dear".
+
+PRICES ARE WHOLE DOLLARS — NO DECIMALS. The CATALOG above shows the exact prices the customer
+sees on the price list we send them. Quote those EXACT numbers — they are whole dollars (e.g.
+"$95", never "$94.82"). Per-kit prices, totals, and shipping are all whole dollars. Never quote
+a price with cents. If you negotiate down, stay in whole dollars and never go below the floor.
 Always end with a JSON block:
 {{
   "action": "collect" | "confirm" | "place" | "send_price_list" | "handoff" | "invalid",
@@ -469,6 +484,7 @@ def handle_inbound(from_phone: str, body: str, name: str = "") -> str:
 
     conversation = get_conversation(from_phone)
     stage = get_stage(from_phone)
+    first_contact = len(conversation) == 0  # nothing said yet → greet warmly
 
     # While a prospect is under operator control, do NOT let the auto-agent reply.
     # Capture their message, forward it to the operators, and stay silent — the
@@ -507,6 +523,11 @@ def handle_inbound(from_phone: str, body: str, name: str = "") -> str:
             print(f"[MessagingAgent] Fast-path _send_price_list crashed: {e!r}")
         conversation.append({"role": "assistant", "content": "[sent price list spreadsheet]"})
         save_conversation(from_phone, conversation)
+        # If this is the very first thing they said, pair the sheet with a warm
+        # greeting so they aren't met with a silent file. Otherwise sheet only.
+        if first_contact:
+            return ("Hello dear! 😊 I am a service agent for Northline Group. Here is our full "
+                    "price list. Tell me which product you need, dear, and how many.")
         return ""  # empty reply → spreadsheet only, no text
 
     # Otherwise Claude decides whether to send the full price list (via the
@@ -608,15 +629,18 @@ def _handle_ordering(phone: str, conversation: list[dict], existing_lead: dict |
         floor_per_kit = get_floor_price(product, spec)
         cap = max_discount_for_qty(qty)  # 0.05 / 0.10 / 0.15 (15% for all 50+ kit orders)
         if list_per_kit is not None and floor_per_kit is not None and cap is not None:
-            capped_per_kit = round(list_per_kit * (1 - cap), 2)
-            min_per_kit = max(floor_per_kit, capped_per_kit)  # higher (stricter) wins
-            min_total = round(min_per_kit * qty, 2)
+            import math
+            # Whole-dollar prices everywhere; round the per-kit minimum UP so the
+            # customer-facing number stays at or above the true discount/floor min.
+            capped_per_kit = list_per_kit * (1 - cap)
+            min_per_kit = math.ceil(max(floor_per_kit, capped_per_kit))
+            min_total = min_per_kit * int(qty)
             if float(total_price or 0) < min_total - 0.01:
                 print(f"[Guardrail] Quote below allowed min: {product} {spec} x{qty} "
                       f"@ ${total_price} < ${min_total} (cap {int(cap*100)}% off list)")
                 # Override the buyer-facing reply and do NOT place the order.
-                return (f"Best price I can do for {int(qty)} kits is ${min_per_kit:.2f} per kit. "
-                        f"{int(qty)} kits = ${min_total:.2f}, plus shipping. Okay for you?")
+                return (f"Best price I can do for {int(qty)} kits is ${min_per_kit} per kit, dear. "
+                        f"{int(qty)} kits = ${min_total}, plus shipping. Okay for you?")
         else:
             print(f"[Guardrail] No price match for {product!r} {spec!r} — allowing (cannot verify)")
 

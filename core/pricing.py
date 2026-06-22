@@ -164,6 +164,8 @@ CATALOG: list[dict] = [
     {"product": "Dermorphin", "spec": "5mg x10", "cost": 20.69},
     {"product": "Dermorphin", "spec": "10mg x10", "cost": 33.10},
     {"product": "Dermorphin", "spec": "20mg x10", "cost": 55.17},
+    {"product": "Bacteriostatic Water", "spec": "10ml x10", "cost": 2.00, "list_override": 12.00},
+    {"product": "Sterile Water", "spec": "10ml x10", "cost": 2.00, "list_override": 12.00},
 ]
 
 MARKUP_START = 6.0   # open at 6x cost
@@ -211,11 +213,22 @@ def get_floor_price(product: str, spec: str = "") -> float | None:
 
 
 def get_list_price(product: str, spec: str = "") -> float | None:
-    """Per-kit list price (6x cost or override) for a product/spec, or None if unmatched."""
+    """Per-kit list price for a product/spec, or None if unmatched.
+
+    Source of truth is the customer-facing price-list image (whole dollars) so the
+    agent always quotes exactly what the customer sees on the sheet. Falls back to
+    a whole-dollar 6x cost (rounded up) for any catalog item not on the sheet."""
     item = find_item(product, spec)
     if item is None:
         return None
-    return get_price(item["cost"], MARKUP_START, item.get("list_override"))
+    from core.price_image import get_image_price
+    img = get_image_price(item["product"], item["spec"])
+    if img is not None:
+        return img
+    if item.get("list_override"):
+        return round(item["list_override"], 2)
+    import math
+    return float(math.ceil(item["cost"] * MARKUP_START))
 
 
 # Volume-based discount caps (percent off list price). Orders over 100 kits are
@@ -237,14 +250,21 @@ def max_discount_for_qty(kits: float) -> float:
 
 
 def get_catalog_text() -> str:
-    """Returns a formatted pricing table for use in Claude prompts."""
+    """Returns a formatted pricing table for use in Claude prompts.
+
+    List Price is the exact whole-dollar number shown on the customer's price
+    list (single source of truth). Floor is whole-dollar 3x cost rounded up, so
+    every price the agent can quote — list or negotiated floor — is a clean whole
+    dollar that matches the sheet and never dips below true cost-floor."""
+    import math
     lines = ["Product | Spec | List Price | Floor Price (never go below)"]
     lines.append("-" * 70)
     for item in CATALOG:
-        override = item.get("list_override")
-        list_price = get_price(item["cost"], MARKUP_START, override)
-        floor_price = get_price(item["cost"], MARKUP_FLOOR)
-        lines.append(f"{item['product']} | {item['spec']} | ${list_price} | ${floor_price}")
+        list_price = get_list_price(item["product"], item["spec"])
+        if list_price is None:
+            list_price = math.ceil(item["cost"] * MARKUP_START)
+        floor_price = math.ceil(item["cost"] * MARKUP_FLOOR)
+        lines.append(f"{item['product']} | {item['spec']} | ${int(round(list_price))} | ${floor_price}")
     return "\n".join(lines)
 
 
@@ -417,6 +437,10 @@ All prices per kit (10 vials) • USD
 *Survodutide*
   5mg  → $480.00
   10mg → $819.30
+
+*━━ Reconstitution Supplies ━━*
+*Bacteriostatic Water* 10ml → $12.00
+*Sterile Water*        10ml → $12.00
 
 Reply with a product name for a specific quote, or to place an order. 🧬"""
 ]

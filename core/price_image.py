@@ -14,11 +14,13 @@ if _os.environ.get("RAILWAY_ENVIRONMENT") or not (_ICLOUD.parent.exists()):
     OUTPUT_PATH    = _STATIC / "price_list.png"
     CN_OUTPUT_PATH = _STATIC / "price_list_cn.png"
     XLSX_PATH      = _STATIC / "price_list.xlsx"
+    XLS_PATH       = _STATIC / "price_list.xls"
     PDF_PATH       = _STATIC / "price_list.pdf"
 else:
     OUTPUT_PATH    = _ICLOUD / "price_list.png"
     CN_OUTPUT_PATH = _ICLOUD / "price_list_cn.png"
     XLSX_PATH      = _ICLOUD / "price_list.xlsx"
+    XLS_PATH       = _ICLOUD / "price_list.xls"
     PDF_PATH       = _ICLOUD / "price_list.pdf"
 
 CATEGORIES = [
@@ -94,6 +96,8 @@ CATEGORIES = [
         ("NP8100", "Snap-8",                "100mg",    "$663"),
         ("LC216",  "Lipo-C",                "10ml",     "$92"),
         ("MIC10",  "MIC (Lipo+B12)",        "10ml",     "$298"),
+        ("BAC10",  "Bacteriostatic Water",  "10ml",     "$12"),
+        ("STW10",  "Sterile Water",         "10ml",     "$12"),
     ]),
     ("GH / Growth", [
         ("IP2",    "Ipamorelin",            "2mg",      "$47"),
@@ -184,6 +188,45 @@ CATEGORIES = [
         ("SLU5",   "SLU-PP-322",            "5mg",      "$216"),
     ]),
 ]
+
+
+# ── Single source of truth for customer-facing prices ────────────────────────
+# The price-list image/spreadsheet above is what the customer actually sees, so
+# the agent must quote from these exact whole-dollar numbers. Build a normalized
+# lookup keyed by (product, dose) so pricing.py can resolve a quote to the same
+# price shown on the sheet.
+import re as _re
+
+
+def _norm_product(s: str) -> str:
+    return _re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+
+def _norm_dose(s: str) -> str:
+    """Leading dose token, e.g. '10mg x10' -> '10mg', '3000IU' -> '3000iu'."""
+    m = _re.search(r"\d+\.?\d*\s*(?:mg|ml|iu|mcg|g)", (s or "").lower())
+    return _re.sub(r"\s+", "", m.group()) if m else _re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+
+def _build_image_price_index() -> dict:
+    idx: dict[tuple[str, str], float] = {}
+    for _cat, _items in CATEGORIES:
+        for _code, _product, _spec, _pstr in _items:
+            try:
+                price = float(_re.sub(r"[^0-9.]", "", _pstr))
+            except ValueError:
+                continue
+            idx[(_norm_product(_product), _norm_dose(_spec))] = price
+    return idx
+
+
+_IMAGE_PRICE_INDEX = _build_image_price_index()
+
+
+def get_image_price(product: str, spec: str = "") -> float | None:
+    """The exact whole-dollar list price shown on the customer's price list, or
+    None if this product/spec is not on the sheet."""
+    return _IMAGE_PRICE_INDEX.get((_norm_product(product), _norm_dose(spec)))
 
 
 def generate_price_list_image(lang: str = "en") -> Path:
@@ -622,9 +665,109 @@ def generate_price_list_xlsx() -> Path:
     return XLSX_PATH
 
 
+def generate_price_list_xls() -> Path:
+    """Generate a bilingual XLS (Excel 97-2003) price list."""
+    import xlwt
+
+    CAT_LABELS = {
+        "GLP-1 Peptides":      "GLP-1 肽类  (GLP-1 Peptides)",
+        "Healing & Recovery":  "愈合恢复  (Healing & Recovery)",
+        "GH / Growth":         "生长激素  (GH / Growth)",
+        "Cognitive & Wellness":"认知健康  (Cognitive & Wellness)",
+    }
+
+    wb = xlwt.Workbook(encoding="utf-8")
+    ws = wb.add_sheet("Price List")
+
+    # Styles
+    title_font = xlwt.Font(); title_font.bold = True; title_font.height = 280  # 14pt
+    title_font.colour_index = xlwt.Style.colour_map["white"]
+    title_pat = xlwt.Pattern(); title_pat.pattern = xlwt.Pattern.SOLID_PATTERN
+    title_pat.pattern_fore_colour = xlwt.Style.colour_map["dark_blue"]
+    title_style = xlwt.XFStyle(); title_style.font = title_font; title_style.pattern = title_pat
+    title_align = xlwt.Alignment(); title_align.horz = xlwt.Alignment.HORZ_CENTER
+    title_style.alignment = title_align
+
+    hdr_font = xlwt.Font(); hdr_font.bold = True; hdr_font.height = 200
+    hdr_font.colour_index = xlwt.Style.colour_map["white"]
+    hdr_pat = xlwt.Pattern(); hdr_pat.pattern = xlwt.Pattern.SOLID_PATTERN
+    hdr_pat.pattern_fore_colour = xlwt.Style.colour_map["dark_blue"]
+    hdr_style = xlwt.XFStyle(); hdr_style.font = hdr_font; hdr_style.pattern = hdr_pat
+    hdr_align = xlwt.Alignment(); hdr_align.horz = xlwt.Alignment.HORZ_CENTER
+    hdr_style.alignment = hdr_align
+
+    cat_font = xlwt.Font(); cat_font.bold = True; cat_font.height = 220
+    cat_pat = xlwt.Pattern(); cat_pat.pattern = xlwt.Pattern.SOLID_PATTERN
+    cat_pat.pattern_fore_colour = xlwt.Style.colour_map["grey25"]
+    cat_style = xlwt.XFStyle(); cat_style.font = cat_font; cat_style.pattern = cat_pat
+
+    prod_font = xlwt.Font(); prod_font.bold = True; prod_font.height = 200
+    prod_style = xlwt.XFStyle(); prod_style.font = prod_font
+
+    plain_style = xlwt.XFStyle()
+
+    price_font = xlwt.Font(); price_font.bold = True; price_font.height = 200
+    price_style = xlwt.XFStyle(); price_style.font = price_font
+    price_align = xlwt.Alignment(); price_align.horz = xlwt.Alignment.HORZ_RIGHT
+    price_style.alignment = price_align
+
+    # Title row
+    ws.write_merge(0, 0, 0, 3, "NORTHLINE GROUP — RESEARCH PEPTIDE PRICE LIST", title_style)
+    ws.row(0).height = 520
+
+    # Subtitle
+    sub_style = xlwt.XFStyle()
+    sub_font = xlwt.Font(); sub_font.italic = True; sub_font.height = 180
+    sub_style.font = sub_font
+    sub_align = xlwt.Alignment(); sub_align.horz = xlwt.Alignment.HORZ_CENTER
+    sub_style.alignment = sub_align
+    ws.write_merge(1, 1, 0, 3,
+        "北线集团 — 每套 (10瓶) · 所有价格USD · 批量优惠可谈  |  Per Kit (10 Vials) · All Prices USD",
+        sub_style)
+    ws.row(1).height = 340
+
+    # Column headers
+    for col, h in enumerate(["SKU / 产品代码", "PRODUCT / 产品", "SPEC / 规格", "PRICE/KIT / 价格/套"]):
+        ws.write(2, col, h, hdr_style)
+    ws.row(2).height = 380
+
+    row = 3
+    for cat_name, items in CATEGORIES:
+        ws.write_merge(row, row, 0, 3, CAT_LABELS.get(cat_name, cat_name).upper(), cat_style)
+        ws.row(row).height = 340
+        row += 1
+        for sku, product, spec, price in items:
+            ws.write(row, 0, sku, plain_style)
+            ws.write(row, 1, product, prod_style)
+            ws.write(row, 2, spec, plain_style)
+            ws.write(row, 3, price, price_style)
+            ws.row(row).height = 300
+            row += 1
+
+    # Footer
+    footer_style = xlwt.XFStyle()
+    footer_font = xlwt.Font(); footer_font.italic = True; footer_font.height = 160
+    footer_style.font = footer_font
+    ws.write_merge(row, row, 0, 3,
+        "所有产品仅供研究使用 · 最低订购: 1套  |  Research use only · Min order: 1 kit",
+        footer_style)
+
+    # Column widths (units = 1/256th of char width)
+    ws.col(0).width = 3500
+    ws.col(1).width = 6500
+    ws.col(2).width = 3000
+    ws.col(3).width = 4000
+
+    XLS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(str(XLS_PATH))
+    print(f"[PriceImage] Saved XLS to {XLS_PATH}")
+    return XLS_PATH
+
+
 if __name__ == "__main__":
     generate_price_list_image()
     generate_price_list_image_cn()
     generate_price_list_xlsx()
+    generate_price_list_xls()
     generate_price_list_pdf()
     print("Done.")
