@@ -140,7 +140,7 @@ CATEGORIES = [
     ("Cognitive & Wellness", [
         ("NJ100",  "NAD",                   "100mg",    "$100"),
         ("NJ500",  "NAD",                   "500mg",    "$240"),
-        ("NJ1000", "NAD",                   "1000mg",   "$265"),
+        ("NJ1000", "NAD",                   "1000mg",   "$260"),
         ("GTT4",   "Glutathione",           "400mg",    "$67"),
         ("GTT",    "Glutathione",           "600mg",    "$87"),
         ("GTT15",  "Glutathione",           "1500mg",   "$166"),
