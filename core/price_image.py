@@ -138,9 +138,9 @@ CATEGORIES = [
         ("EP0",    "EPO",                   "3000IU",   "$149"),
     ]),
     ("Cognitive & Wellness", [
-        ("NJ100",  "NAD",                   "100mg",    "$100"),
-        ("NJ500",  "NAD",                   "500mg",    "$405"),
-        ("NJ1000", "NAD",                   "1000mg",   "$740"),
+        ("NJ100",  "NAD",                   "100mg",    "$55"),
+        ("NJ500",  "NAD",                   "500mg",    "$135"),
+        ("NJ1000", "NAD",                   "1000mg",   "$195"),
         ("GTT4",   "Glutathione",           "400mg",    "$67"),
         ("GTT",    "Glutathione",           "600mg",    "$87"),
         ("GTT15",  "Glutathione",           "1500mg",   "$166"),
