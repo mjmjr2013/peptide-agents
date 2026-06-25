@@ -4,9 +4,10 @@ Paste this into a fresh Claude Code session (run from `~/peptide-agents`) to con
 It describes the live WhatsApp sales agent, the new order/payment/fulfillment system,
 how to deploy/debug, and what's outstanding. No secret tokens are stored here.
 
-Last updated after **going live**: order-intake + crypto-payment + fulfillment-reports
-system is **deployed to prod** (commit `315c543`, `/health` ok). All env vars set in Railway.
-Remaining: run the $2–3 live USDT end-to-end test (see §14). See §13/§14 for current state.
+Last updated after **going live** + adding conversation transcript logging: order-intake +
+crypto-payment + fulfillment-reports system is **deployed to prod** (commit `e0ebb30`, `/health` ok).
+All env vars set in Railway; base purged of test data. Remaining: run the $2–3 live USDT end-to-end
+test (§14) and build the shipping-notification feature (§16, in design). See §13/§14/§16.
 
 ---
 
@@ -55,15 +56,23 @@ Large orders >100 kits below cap → operator relay (`OPERATOR_NUMBERS`, current
 - Matching is by **unique amount** (USDT exact; BTC quoted amount + ~1.5% tolerance). All tested against live chains.
 
 ## 6. Airtable data model (system of record)
-Base `apprMJI8obXHOLvJU`. Tables: Leads, Campaigns, Labs, **Orders**, **Order Items** (new).
+Base `apprMJI8obXHOLvJU`. Tables: Leads, Campaigns, Labs, **Orders**, **Order Items**, **Messages**.
 - **Orders** (one row per purchase): `order_ref`, `lead_id`(link), `product`(summary), `total_price`,
   `coin`, `expected_amount`, `payment_status`(awaiting/paid/failed), `tx_hash`, `paid_at`, `week_tag`,
   `ship_name`/`address_line1`/`address_line2`/`city`/`state_province`/`postal_code`/`country`/`ship_phone`,
   `fulfillment_status`, and two cadence flags: **`bulk_ordered`** (checkbox) and **`manifested`** (checkbox).
 - **Order Items** (one row per product, linked to Orders): `item`, `Order`(link), `product`, `spec`, `kits`,
   `supplier_sku`, `line_total`.
+- **Messages** (one row per WhatsApp message — conversation transcript log; table id `tbldFNHuylHWrQyuF`):
+  `phone`, `direction`(singleSelect inbound/outbound), `body`(long text), `sent_at`(dateTime), `Lead`(link).
+  Written best-effort by `airtable.log_message()` from the Twilio webhook + operator relay. Read it grouped
+  by `phone`, sorted by `sent_at` asc to see each prospect thread. Logs going forward only (no backfill;
+  pre-existing history is in Twilio's Message logs). Durable across redeploys (unlike in-memory state).
 - The Airtable PAT can create fields/tables via the metadata API (used to build the above), but **cannot add
-  new single-select options** → use existing option values (e.g. lead `source="Direct"`, not "WhatsApp").
+  new single-select options** to an EXISTING field → use existing option values (e.g. lead `source="Direct"`,
+  not "WhatsApp"). NOTE: defining choices when CREATING a brand-new singleSelect field IS allowed (that is how
+  the Messages `direction` field was made).
+- **Test data was purged** (2026-06-25): all `555`-number test Leads/Orders deleted; base started clean for go-live.
 
 ## 7. Fulfillment reports (`agents/weekly_report.py`) + scheduler (`main.py`)
 Two independent cadences, two audiences, generated from paid orders; flag-based so each order is
@@ -114,12 +123,13 @@ Railway IDs — project `c3856be2-a3fa-4184-a096-7f8f36f6e762`, service `4336f9e
 - Airtable PAT `pat…` (in Railway `AIRTABLE_API_KEY`); base `apprMJI8obXHOLvJU`.
 - WABA id `1010468724997939`; HK regulatory bundle `BUad64de52410298f0c0252f7c651b9534`.
 
-## 13. Current state (DEPLOYED — commit `315c543`)
+## 13. Current state (DEPLOYED — commit `e0ebb30`)
 All of §4–§7 is implemented and **deployed to prod** (force-deployed by SHA; `/health` ok). All env
-vars in §14 are set in Railway. Email path live-tested (Gmail SMTP to both recipients OK). Airtable
-schema (Orders fields + Order Items table + flags) exists in the live base. Decommissioned the stale
-`order_intake_agent` + supplier-leaking `fulfillment_agent`. **Not yet done:** the $2–3 live USDT
-end-to-end test (the only remaining gate before treating this as fully proven in prod).
+vars in §14 are set in Railway. Email path live-tested (Gmail SMTP to both recipients OK). Conversation
+transcript logging to the Messages table is live (§6). Test data purged; base is clean. Decommissioned
+the stale `order_intake_agent` + supplier-leaking `fulfillment_agent`. **Not yet done:** the $2–3 live
+USDT end-to-end test (the only remaining gate before treating this as fully proven in prod), and the
+shipping-notification feature (§16, still in design).
 
 ## 14. Open items / TODO
 **Env vars now SET in Railway (all of these are live):**
@@ -148,3 +158,33 @@ end-to-end test (the only remaining gate before treating this as fully proven in
 - Public Ethereum RPC caps/blocks wide `eth_getLogs` ranges → use Etherscan for ERC-20.
 - Price source of truth = the image (`CATEGORIES`), not `cost×6`; served sheet = committed `static/price_list.xlsx`.
 - Railway auto-deploy unreliable → force-deploy by explicit commit SHA and poll.
+- Railway GraphQL is behind Cloudflare → requests with a default urllib User-Agent get **403 error 1010**.
+  Send a browser-like `User-Agent` header on every Railway API call.
+- Twilio inbound media URLs (`MediaUrl0`, on api.twilio.com) require account auth → they are NOT directly
+  re-sendable as a `media_url` to a customer. To relay an image, re-host it at a public URL first
+  (e.g. upload to an Airtable attachment field, which returns a public URL Twilio can fetch).
+
+## 16. PENDING FEATURE — shipping notifications to customers (IN DESIGN, not built)
+Goal: the agent sends each customer fulfillment updates over WhatsApp, in two stages at two different times:
+  1. **Immediately** (order placed → warehouse makes label): send the customer their **tracking number**
+     (and possibly the shipping-label image "for legitimacy" — Jordan to confirm tracking-only vs +label).
+  2. **~1–2 weeks later** (weekly bulk arrives → warehouse divvies vials per order → photographs them):
+     send the customer the **vial photo** before it ships.
+Both are per-order, tied to a specific customer, and sent BY the agent.
+
+Open design question (Jordan is confirming the workflow with the warehouse contact before we build):
+**how does the warehouse hand each label/tracking/photo back to the system, and how do we match it to the
+right customer/order?** Leading proposal (recommended, not yet approved): warehouse **replies on WhatsApp**
+to the agent, referencing the **order ref** from the daily manifest — e.g. `TRACK <order_ref> <tracking#>`
+for stage 1, and a photo captioned `VIALS <order_ref>` for stage 2. The agent recognizes the warehouse
+sender (treat `WAREHOUSE_WHATSAPP` like an operator/special sender, see `_is_operator` pattern), matches
+the order, and forwards to that order's customer. Alternatives floated: warehouse enters tracking + uploads
+image in Airtable (needs Airtable access; a scheduler then sends), or Jordan/Daniel relay manually.
+
+Implementation notes for whoever builds it:
+- Likely new Orders fields: `tracking_number` (text), `label_image`/`vial_photo` (attachment), and
+  per-stage sent flags (e.g. `tracking_sent`, `vial_photo_sent`) so each notice fires once.
+- Relaying the warehouse's inbound **photo** to the customer needs re-hosting (see §15 gotcha) — simplest
+  is to save it to the order's Airtable attachment field, then send that public URL as the Twilio `media_url`.
+  Bonus: gives a permanent label/vial-photo record in Airtable.
+- Recognize the warehouse number as a special inbound sender (do NOT treat its messages as a prospect).
