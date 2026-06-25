@@ -407,6 +407,7 @@ def _send_to_prospect(phone: str, text: str) -> None:
     """Send a message to a prospect on their original channel."""
     from_number = settings.twilio_whatsapp_from if "whatsapp" in phone else settings.twilio_phone_number
     msg = twilio_client.messages.create(body=text, from_=from_number, to=phone)
+    airtable.log_message(phone, "outbound", text)  # operator-relayed reply → transcript
     print(f"[Relay] To prospect {phone}: {text!r} SID={msg.sid}")
 
 
@@ -943,7 +944,14 @@ def twilio_webhook_handler(form_data: dict) -> str:
     body = form_data.get("Body", "").strip()
     profile_name = form_data.get("ProfileName", "")
 
+    # Transcript log (Airtable) — inbound. Best-effort; never blocks the reply.
+    if body:
+        airtable.log_message(from_phone, "inbound", body)
+
     reply = handle_inbound(from_phone, body, name=profile_name)
+
+    if reply:
+        airtable.log_message(from_phone, "outbound", reply)
 
     twiml = MessagingResponse()
     if reply:

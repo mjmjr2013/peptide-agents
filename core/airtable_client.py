@@ -11,6 +11,7 @@ class AirtableClient:
     TABLE_ORDER_ITEMS = "Order Items"
     TABLE_LABS = "Labs"
     TABLE_CAMPAIGNS = "Campaigns"
+    TABLE_MESSAGES = "Messages"
 
     def __init__(self):
         self.api = Api(settings.airtable_api_key)
@@ -38,6 +39,31 @@ class AirtableClient:
     @property
     def order_items(self):
         return self.table(self.TABLE_ORDER_ITEMS)
+
+    @property
+    def messages(self):
+        return self.table(self.TABLE_MESSAGES)
+
+    # ── Messages (conversation transcript log) ──────────────────────────────
+
+    def log_message(self, phone: str, direction: str, body: str,
+                    lead_id: str | None = None) -> None:
+        """Append one WhatsApp message to the Messages table so the team can read
+        full prospect transcripts in Airtable. Best-effort: never raises into the
+        message-handling path (a logging failure must not drop a customer reply)."""
+        try:
+            fields: dict = {
+                "phone": (phone or "").replace("whatsapp:", ""),
+                "direction": direction,
+                "body": body or "",
+                "sent_at": __import__("datetime").datetime.now(
+                    __import__("datetime").timezone.utc).isoformat(),
+            }
+            if lead_id:
+                fields["Lead"] = [lead_id]
+            self.messages.create(fields)
+        except Exception as e:
+            print(f"[airtable] log_message failed: {e!r}")
 
     # ── Leads ──────────────────────────────────────────────────────────────
 
