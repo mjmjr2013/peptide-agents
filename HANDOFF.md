@@ -4,9 +4,9 @@ Paste this into a fresh Claude Code session (run from `~/peptide-agents`) to con
 It describes the live WhatsApp sales agent, the new order/payment/fulfillment system,
 how to deploy/debug, and what's outstanding. No secret tokens are stored here.
 
-Last updated after building the order-intake + crypto-payment + fulfillment-reports system.
-The order system is committed on `main` and pushed for backup, but **NOT deployed** (prod still
-runs the prior build) — see §13/§14.
+Last updated after **going live**: order-intake + crypto-payment + fulfillment-reports
+system is **deployed to prod** (commit `315c543`, `/health` ok). All env vars set in Railway.
+Remaining: run the $2–3 live USDT end-to-end test (see §14). See §13/§14 for current state.
 
 ---
 
@@ -69,12 +69,16 @@ Base `apprMJI8obXHOLvJU`. Tables: Leads, Campaigns, Labs, **Orders**, **Order It
 Two independent cadences, two audiences, generated from paid orders; flag-based so each order is
 processed once per cadence:
 - **DAILY warehouse manifest** — `run_daily_manifest()`: paid orders where `manifested`=false → per-order
-  name+address+items (NO costs/supplier) → email → set `manifested`. Fires **daily at `DAILY_MANIFEST_HOUR`
-  (default 07:00 Mountain)**. Purpose: warehouse makes labels + sends tracking fast.
+  name+address+items (NO costs/supplier) → **WhatsApp** (Twilio) to `WAREHOUSE_WHATSAPP` as chunked
+  per-order text → set `manifested` **only on successful send**. Fires **daily at `DAILY_MANIFEST_HOUR`
+  (set to 0 = midnight Mountain)**. Purpose: warehouse makes labels + sends tracking fast.
+  Warehouse contact: `whatsapp:+8613418806654`.
 - **WEEKLY supplier bulk** — `run_supplier_bulk()`: paid orders where `bulk_ordered`=false → aggregate kits
-  per SKU (NO names/addresses/prices) → email → set `bulk_ordered`. Fires **Sunday 00:00 Mountain** (week =
-  Sun 00:00 → Sat 23:59; last order Sat 11:59pm).
-- Delivery: **email via SendGrid** to `REPORT_EMAIL` (defaults to `SENDGRID_FROM_EMAIL`). Needs `SENDGRID_API_KEY`.
+  per SKU (NO names/addresses/prices) → **email** → set `bulk_ordered`. Fires **Sunday 00:00 Mountain** (week =
+  Sun 00:00 → Sat 23:59; last order Sat 11:59pm). Brother forwards it to the supplier himself.
+- Email delivery: **Gmail SMTP** (Google Workspace) — `GMAIL_USER`/`GMAIL_APP_PASSWORD`, sent to the
+  comma-separated `REPORT_EMAIL` (jordan@northlinesupplies.com + danielmcwilliams62881@gmail.com).
+  SendGrid was **retired** (the merged Twilio Email console gated everything behind domain auth).
 - Scheduler runs in-process in the webhook app (`run_report_scheduler`, checks every 5 min, guarded once/day & once/week).
 - One-shot CLI: `python main.py daily` | `python main.py weekly` | `python main.py report <week-tag>` (preview, no marking).
 
@@ -83,7 +87,8 @@ Source of truth = the price-list image `CATEGORIES` (whole dollars). `get_list_p
 resolve to the image; floor = ceil(3×cost); discount caps <25:5% / 25–49:10% / 50+:15%. Whole dollars only.
 Sheet sent to customers = committed `static/price_list.xlsx` (regenerate after price edits, see §10).
 NAD+ is a manual loss-leader: $55 / $135 / $195 (3–4× cost). Audit: catalog markup ~5.6× median.
-⚠️ Wallet/crypto receiving addresses are **not yet set** (placeholders) — see §14.
+Wallet/crypto receiving addresses are **set in Railway** (`ETH_ADDRESS`, `BTC_ADDRESS` — see §14). The
+agent never hands out an address; the code generates exact payment instructions after a placed order.
 
 ## 9. Persona / tone
 Warm kind Chinese-woman agent, frequent "dear"; greets on first contact; offers choices as
@@ -109,24 +114,30 @@ Railway IDs — project `c3856be2-a3fa-4184-a096-7f8f36f6e762`, service `4336f9e
 - Airtable PAT `pat…` (in Railway `AIRTABLE_API_KEY`); base `apprMJI8obXHOLvJU`.
 - WABA id `1010468724997939`; HK regulatory bundle `BUad64de52410298f0c0252f7c651b9534`.
 
-## 13. Current state (built + tested locally, COMMITTED, NOT deployed)
-All of §4–§7 is implemented, unit/integration-tested against live Airtable + live chains, committed on
-`main` (pushed for backup) but **not deployed** — the live agent still runs the prior (pre-order-system) code.
-Reason: going live needs the env vars in §14, or customers would be told to pay to an unset wallet. Airtable
-schema (Orders fields + Order Items table + flags) IS already created in the live base.
-Decommissioned the stale `order_intake_agent` + supplier-leaking `fulfillment_agent`.
+## 13. Current state (DEPLOYED — commit `315c543`)
+All of §4–§7 is implemented and **deployed to prod** (force-deployed by SHA; `/health` ok). All env
+vars in §14 are set in Railway. Email path live-tested (Gmail SMTP to both recipients OK). Airtable
+schema (Orders fields + Order Items table + flags) exists in the live base. Decommissioned the stale
+`order_intake_agent` + supplier-leaking `fulfillment_agent`. **Not yet done:** the $2–3 live USDT
+end-to-end test (the only remaining gate before treating this as fully proven in prod).
 
 ## 14. Open items / TODO
-**To go live (then deploy + run a $2–3 live USDT test):**
-- `ETH_ADDRESS` — Phantom Ethereum `0x…` address (USDT-ERC20 received here).
-- `ETHERSCAN_API_KEY` — free (etherscan.io → API Keys); required to verify USDT.
-- `SENDGRID_API_KEY` — for daily/weekly report emails (only `SENDGRID_FROM_EMAIL` is set).
-- **BTC?** decide: provide Phantom BTC address (`BTC_ADDRESS`) or go USDT-only (then drop the coin-choice step in the prompt).
-- Confirm `REPORT_EMAIL` (default = `SENDGRID_FROM_EMAIL`; likely jordan@northlinesupplies.com) and `DAILY_MANIFEST_HOUR`/timezone (default 07:00 Mountain) + the warehouse's timezone.
-- `OPERATOR_NUMBERS` (optional) — so "order ready / large order" alerts reach a phone.
+**Env vars now SET in Railway (all of these are live):**
+- `ETH_ADDRESS` = `0xD1A3BaAf4d451cD676FFbbf07c09A9833A149E37` (USDT-ERC20 received here).
+- `ETHERSCAN_API_KEY` set (verifies USDT).
+- `BTC_ADDRESS` = `bc1qxpdqaksmz6uaz5ftfum8y8cmujtzc2xuwaea5p` (BTC accepted; both coins offered).
+- `GMAIL_USER` = jordan@northlinesupplies.com, `GMAIL_APP_PASSWORD` set (weekly report email via Gmail SMTP).
+- `REPORT_EMAIL` = jordan@northlinesupplies.com,danielmcwilliams62881@gmail.com (weekly report recipients).
+- `WAREHOUSE_WHATSAPP` = `whatsapp:+8613418806654`, `DAILY_MANIFEST_HOUR` = 0 (midnight Mountain).
+- `OPERATOR_NUMBERS` (optional) — still unset; large-order alerts only log until set.
+
+**Remaining:**
+- **Run the $2–3 live USDT end-to-end test** (WhatsApp +85292909474 → place → pay exact USDT → verify →
+  address → Airtable). The only gate left before this is fully proven in prod.
+
 **Other standing items:**
 - Twilio HK **regulatory bundle** = `pending-review` (WhatsApp unaffected; SMS/voice gated until approved).
-- Cleanups: delete the Railway token used; rotate the GitHub PAT; delete the Cloudflare API token.
+- Cleanups: delete the Railway token used this session; rotate the GitHub PAT; delete the Cloudflare API token.
 
 ## 15. Gotchas (hard-won)
 - Consoles lie — verify via API (sender ONLINE w/ empty webhook silently drops inbound; bundle "submitted" while Draft).
