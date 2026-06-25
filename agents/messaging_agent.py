@@ -4,7 +4,10 @@ Messaging Agent — qualifies inbound leads via SMS, then takes their order inli
 Full flow: qualify → collect order → confirm → write to Airtable → notify fulfillment.
 """
 import json
+import math
 import re
+import time
+import secrets
 from datetime import datetime, timezone
 
 from twilio.rest import Client as TwilioClient
@@ -16,6 +19,8 @@ from core.pricing import (
     get_catalog_text, get_price_list_messages, get_floor_price, get_list_price,
     max_discount_for_qty, HANDOFF_KITS, MARKUP_START, MARKUP_FLOOR,
 )
+from core.price_image import get_sku
+from core import crypto_verify
 from config import settings
 
 QUALIFY_PROMPT = """You are a professional sales qualifier for Northline Group, a peptide research supply company.
@@ -211,14 +216,16 @@ FLOW:
 5. When confirming the order, state shipping: standard $95 (FREE if product total
    over $1000), 4 weeks or less; or expedited $235, 10 days or less. Ask gently
    "which would you like, dear?"
-6. For payment, warmly say we accept both BTC and USDT and ask which they would prefer,
-   dear. Give the matching wallet address only after price + shipping are agreed. Ship
-   after payment confirmed.
-7. Once price, shipping, and payment coin are agreed, confirm full order details and place it
+6. For payment, warmly say we accept both BTC and USDT and ask which they prefer, dear.
+   Do NOT give any wallet address or amount yourself — once they pick a coin and the
+   order is agreed, use action "place" and the SYSTEM sends the exact amount and address.
+7. Use action "place" only when ALL items, shipping, and coin are agreed. Fill line_items
+   (each product, spec, quantity_kits, and the agreed unit_price per kit), shipping, and
+   coin. Keep reply_message short or empty — the system sends payment instructions next,
+   then verifies payment on-chain and collects the shipping address.
 
-NOTE: in the JSON, "total_price" is the PRODUCT subtotal only (price per kit x kits),
-BEFORE shipping. State the shipping fee and final total (product + shipping) in your
-reply_message, but keep total_price as the product subtotal.
+NOTE: state the shipping fee and final total (products + shipping) in your replies while
+negotiating, but you do NOT compute the final charge for "place" — the system does.
 
 Keep replies short and choppy — this is WhatsApp, and you are a warm Chinese lady speaking
 simple English. Use plenty of "dear".
@@ -230,10 +237,9 @@ a price with cents. If you negotiate down, stay in whole dollars and never go be
 Always end with a JSON block:
 {{
   "action": "collect" | "confirm" | "place" | "send_price_list" | "handoff" | "invalid",
-  "product": "...",
-  "spec": "...",
-  "quantity_kits": 0,
-  "total_price": 0.0,
+  "line_items": [{{"product": "...", "spec": "...", "quantity_kits": 0, "unit_price": 0}}],
+  "shipping": "standard" | "expedited" | null,
+  "coin": "USDT" | "BTC" | null,
   "reply_message": "...",
   "notes": "..."
 }}"""
@@ -242,12 +248,97 @@ twilio_client = TwilioClient(settings.twilio_account_sid, settings.twilio_auth_t
 
 # ── Conversation state ─────────────────────────────────────────────────────────
 _conversations: dict[str, list[dict]] = {}
-_lead_stage: dict[str, str] = {}  # phone -> "qualifying" | "ordering" | "manual"
+_lead_stage: dict[str, str] = {}  # phone -> "qualifying"|"ordering"|"manual"|"awaiting_payment"|"awaiting_address"
+
+# Orders awaiting crypto payment. phone -> {order_id, coin, expected_amount, since, charge_usd}
+_pending_payments: dict[str, dict] = {}
 
 # Prospects (>100 kits) currently under operator control. phone -> details dict.
 # While a prospect is in here their stage is "manual": the auto-agent will not set
 # prices; the operator drives the conversation via relay.
 _pending_handoffs: dict[str, dict] = {}
+
+
+# ── Order / payment helpers ──────────────────────────────────────────────────
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _wallet_address(coin: str) -> str:
+    return settings.eth_address if coin.upper() == "USDT" else (
+        settings.btc_address if coin.upper() == "BTC" else "")
+
+
+def _order_ref() -> str:
+    return f"NL-{airtable.week_tag().replace('-', '')}-{secrets.token_hex(2).upper()}"
+
+
+def _payment_instructions(coin: str, expected: float, charge_usd: float, addr: str) -> str:
+    if coin == "USDT":
+        return (f"Perfect, dear! 😊 Please send exactly *{expected:.2f} USDT* on the *Ethereum "
+                f"(ERC-20)* network to this address:\n\n{addr}\n\nPlease send the *exact* amount so I "
+                f"can match your payment. Message me once it's sent, dear, and I will confirm.")
+    return (f"Perfect, dear! 😊 Please send exactly *{expected:.8f} BTC* to this address:\n\n{addr}\n\n"
+            f"(That is about ${charge_usd:.2f} at today's rate.) Please send the exact amount and "
+            f"message me once it's sent, dear, and I will confirm.")
+
+
+_ADDR_PROMPT = """Extract a shipping address from the customer's message. Return ONLY a JSON object:
+{"ship_name":"","address_line1":"","address_line2":"","city":"","state_province":"","postal_code":"","country":""}
+Use empty strings for anything not provided. address_line1 is the street line. Do not invent data."""
+
+
+def _parse_address(text: str) -> dict:
+    try:
+        resp = claude.create(system=_ADDR_PROMPT, messages=[{"role": "user", "content": text}], max_tokens=300)
+        data = _parse_json(_extract_text(resp))
+        return {k: (data.get(k) or "").strip() for k in
+                ("ship_name", "address_line1", "address_line2", "city", "state_province", "postal_code", "country")}
+    except Exception as e:
+        print(f"[MessagingAgent] address parse failed: {e!r}")
+        return {}
+
+
+def _validate_line_items(line_items: list[dict]) -> tuple[list[dict], bool]:
+    """Build clean line items; clamp any unit price up to the floor/cap minimum.
+    Returns (items, clamped) where clamped=True if any price was raised."""
+    items, clamped = [], False
+    for li in line_items or []:
+        product = (li.get("product") or "").strip()
+        spec = (li.get("spec") or "").strip()
+        try:
+            kits = int(float(li.get("quantity_kits") or 0))
+        except (TypeError, ValueError):
+            kits = 0
+        if not product or kits <= 0:
+            continue
+        list_pk = get_list_price(product, spec)
+        floor_pk = get_floor_price(product, spec)
+        try:
+            unit = float(li.get("unit_price") or 0)
+        except (TypeError, ValueError):
+            unit = 0.0
+        if list_pk is not None:
+            if unit <= 0:
+                unit = list_pk
+            cap = max_discount_for_qty(kits)
+            min_pk = math.ceil(max(floor_pk or 0, list_pk * (1 - cap)))
+            if unit < min_pk - 0.001:
+                unit = float(min_pk)
+                clamped = True
+        unit = round(unit, 2)
+        items.append({"product": product, "spec": spec, "kits": kits, "unit_price": unit,
+                      "line_total": round(unit * kits, 2), "sku": get_sku(product, spec)})
+    return items, clamped
+
+
+def _shipping_fee(shipping: str, product_subtotal: float) -> int:
+    if shipping == "expedited":
+        return 235
+    if product_subtotal > 1000:  # free standard over $1000
+        return 0
+    return 95
 
 
 def get_conversation(phone: str) -> list[dict]:
@@ -474,6 +565,7 @@ def handle_inbound(from_phone: str, body: str, name: str = "") -> str:
         _conversations.pop(from_phone, None)
         _lead_stage.pop(from_phone, None)
         _pending_handoffs.pop(from_phone, None)
+        _pending_payments.pop(from_phone, None)
         try:
             existing = airtable.find_lead_by_phone(from_phone)
             if existing:
@@ -504,6 +596,56 @@ def handle_inbound(from_phone: str, body: str, name: str = "") -> str:
                           f"(Reply to relay. 'release {_short(from_phone)}' to hand back to auto.)")
         print(f"[MessagingAgent] Manual mode — forwarded prospect msg to operators")
         return ""  # operator will craft the reply
+
+    # ── Awaiting crypto payment: verify on-chain when the customer pings us ──
+    if stage == "awaiting_payment":
+        conversation.append({"role": "user", "content": body})
+        pend = _pending_payments.get(from_phone)
+        if not pend:
+            set_stage(from_phone, "ordering")
+        else:
+            res = crypto_verify.verify_payment(pend["coin"], _wallet_address(pend["coin"]),
+                                               pend["expected"], pend["since"])
+            if res:
+                try:
+                    airtable.mark_order_paid(pend["order_id"], res.get("tx_hash", ""), _now_iso())
+                except Exception as e:
+                    print(f"[MessagingAgent] mark_paid failed: {e!r}")
+                set_stage(from_phone, "awaiting_address")
+                reply = ("Payment received, dear! 🎉 Thank you so much. Now please send your "
+                         "shipping details so we can deliver: full name, street address, city, "
+                         "state/province, postal code, and country.")
+            else:
+                reply = ("I don't see the payment yet, dear — it can take a minute or two to "
+                         "confirm on the blockchain. Message me once it's sent and I'll check again. 😊")
+            conversation.append({"role": "assistant", "content": reply})
+            save_conversation(from_phone, conversation)
+            return reply
+
+    # ── Awaiting shipping address after a confirmed payment ──────────────────
+    if stage == "awaiting_address":
+        conversation.append({"role": "user", "content": body})
+        pend = _pending_payments.get(from_phone)
+        addr = _parse_address(body)
+        if not addr or not addr.get("address_line1") or not addr.get("city"):
+            reply = ("Sorry dear, I didn't catch the full address. Please send: full name, "
+                     "street address, city, state/province, postal code, and country.")
+            conversation.append({"role": "assistant", "content": reply})
+            save_conversation(from_phone, conversation)
+            return reply
+        if pend:
+            try:
+                airtable.set_order_shipping(pend["order_id"], **addr)
+            except Exception as e:
+                print(f"[MessagingAgent] set_shipping failed: {e!r}")
+        _pending_payments.pop(from_phone, None)
+        set_stage(from_phone, "ordering")
+        who = addr.get("ship_name") or "you"
+        reply = (f"All set, dear! 🙏 Your order is confirmed and will ship to {who}. "
+                 f"Thank you so much — message me anytime if you need anything else!")
+        conversation.append({"role": "assistant", "content": reply})
+        save_conversation(from_phone, conversation)
+        return reply
 
     existing_lead = airtable.find_lead_by_phone(from_phone)
 
@@ -598,72 +740,81 @@ def _handle_ordering(phone: str, conversation: list[dict], existing_lead: dict |
     action_data = _parse_json(response_text)
     reply = action_data.get("reply_message", "What product and quantity are you looking for?")
     action = action_data.get("action", "collect")
-    product = action_data.get("product", "")
-    spec = action_data.get("spec", "")
-    quantity_kits = action_data.get("quantity_kits", 0)
-    total_price = action_data.get("total_price", 0.0)
+    line_items = action_data.get("line_items") or []
+    shipping = (action_data.get("shipping") or "").lower()
+    coin = (action_data.get("coin") or "").upper()
     notes = action_data.get("notes", "")
 
-    # Claude decided the buyer wants the full catalog — send the spreadsheet only, no text
+    # Full catalog requested — send the spreadsheet only, no text
     if action == "send_price_list":
         try:
             _send_price_list(phone)
             print(f"[MessagingAgent] Claude triggered price list send to {phone}")
         except Exception as e:
             print(f"[MessagingAgent] _send_price_list crashed: {e!r}")
-        return ""  # empty reply → no text, just the document
+        return ""
 
-    # Normalize quantity for the guardrails below.
-    try:
-        qty = float(quantity_kits or 0)
-    except (TypeError, ValueError):
-        qty = 0.0
-
-    # ── Escalation → operator-controlled relay ─────────────────────────────
-    # Large orders are quoted/negotiated normally; the agent only escalates when a
-    # buyer wants a discount beyond the cap. When it does, stall the prospect in the
-    # same chat, hand control to a human operator, and let them set the price.
+    # Large-order escalation → operator-controlled relay
     if action == "handoff":
-        _enter_manual_mode(phone, product, spec, quantity_kits, conversation)
-        # Use Claude's stall wording if it produced one; otherwise a safe default.
+        li = line_items[0] if line_items else {}
+        _enter_manual_mode(phone, li.get("product", ""), li.get("spec", ""),
+                           li.get("quantity_kits", 0), conversation)
         return reply or ("This is big volume, dear. For a price like that I must check with my "
                          "boss. One moment — I come back to you quick.")
 
-    # ── Hard pricing guardrail (volume-capped discount + absolute floor) ───
-    # Regardless of what Claude quoted, never let an order be recorded below the
-    # volume-based discount cap or the 3x-cost floor. Code backstop for the prompt.
-    if action in ("place", "confirm") and product and qty:
-        list_per_kit = get_list_price(product, spec)
-        floor_per_kit = get_floor_price(product, spec)
-        cap = max_discount_for_qty(qty)  # 0.05 / 0.10 / 0.15 (15% for all 50+ kit orders)
-        if list_per_kit is not None and floor_per_kit is not None and cap is not None:
-            import math
-            # Whole-dollar prices everywhere; round the per-kit minimum UP so the
-            # customer-facing number stays at or above the true discount/floor min.
-            capped_per_kit = list_per_kit * (1 - cap)
-            min_per_kit = math.ceil(max(floor_per_kit, capped_per_kit))
-            min_total = min_per_kit * int(qty)
-            if float(total_price or 0) < min_total - 0.01:
-                print(f"[Guardrail] Quote below allowed min: {product} {spec} x{qty} "
-                      f"@ ${total_price} < ${min_total} (cap {int(cap*100)}% off list)")
-                # Override the buyer-facing reply and do NOT place the order.
-                return (f"Best price I can do for {int(qty)} kits is ${min_per_kit} per kit, dear. "
-                        f"{int(qty)} kits = ${min_total}, plus shipping. Okay for you?")
-        else:
-            print(f"[Guardrail] No price match for {product!r} {spec!r} — allowing (cannot verify)")
+    # Pricing guardrail: never let a line price fall below the floor/cap minimum.
+    if action in ("place", "confirm"):
+        items, clamped = _validate_line_items(line_items)
+        if clamped and items:
+            quoted = "; ".join(f"{i['kits']}x {i['product']} {i['spec']}".strip() +
+                               f" at ${int(i['unit_price'])}/kit" for i in items)
+            print(f"[Guardrail] Clamped below-floor quote for {phone}")
+            return f"Best I can do, dear: {quoted}. Okay for you?"
 
-    if action == "place" and lead_id and product and quantity_kits:
+    # Finalize → create a pending order (awaiting payment) and send payment instructions
+    if action == "place":
+        items, _ = _validate_line_items(line_items)
+        if not items:
+            return reply or "What product and how many kits would you like, dear?"
+        if coin not in ("USDT", "BTC"):
+            return "Almost there, dear! We accept both BTC and USDT — which would you prefer to use?"
+        subtotal = sum(i["line_total"] for i in items)
+        total_usd = round(subtotal + _shipping_fee(shipping, subtotal), 2)
+
+        if not lead_id:
+            try:
+                airtable.create_lead(name=phone, email="", phone=phone,
+                                     buyer_type=buyer_type or "Individual", source="Direct", notes=notes)
+                l = airtable.find_lead_by_phone(phone)
+                lead_id = l["id"] if l else ""
+            except Exception as e:
+                print(f"[MessagingAgent] lead create failed: {e!r}")
+        if not lead_id:
+            return "Let me get your order set up, dear — one moment."
+
+        addr = _wallet_address(coin)
+        if not addr:
+            _notify_operators(f"[ORDER READY · no {coin} wallet configured] {phone} ${total_usd}: "
+                              + ", ".join(f"{i['kits']}x {i['product']} {i['spec']}".strip() for i in items))
+            return ("Thank you, dear! Let me confirm the payment details with my team and "
+                    "send them to you in just a moment.")
+
+        charge_usd, expected = airtable.allocate_unique_amount(total_usd, coin)
+        if coin == "BTC" and not expected:
+            return "One moment, dear — let me get you the current BTC amount."
+        ref = _order_ref()
         try:
-            order = airtable.create_order(
-                lead_id=lead_id,
-                product=f"{product} {spec}".strip(),
-                quantity_mg=float(quantity_kits),  # storing kits in quantity field
-                total_price=float(total_price),
-            )
-            airtable.update_lead_status(lead_id, "Converted", notes=notes)
-            print(f"[MessagingAgent] Order placed: {order['id']} — {product} {spec} x{quantity_kits} kits @ ${total_price}")
+            order = airtable.create_pending_order(lead_id, phone, items, charge_usd, coin,
+                                                  expected, ref, airtable.week_tag())
         except Exception as e:
-            print(f"[MessagingAgent] Order creation error: {e}")
+            print(f"[MessagingAgent] pending order create failed: {e!r}")
+            return "Sorry dear, a small hiccup setting up your order — please try again in a moment."
+        airtable.update_lead_status(lead_id, "Converted", notes=notes)
+        _pending_payments[phone] = {"order_id": order["id"], "coin": coin, "expected": expected,
+                                    "since": time.time() - 180, "charge_usd": charge_usd, "ref": ref}
+        set_stage(phone, "awaiting_payment")
+        print(f"[MessagingAgent] Pending order {ref} ({order['id']}) — ${charge_usd} {coin}")
+        return _payment_instructions(coin, expected, charge_usd, addr)
 
     return reply
 
@@ -699,15 +850,24 @@ def _extract_text(response) -> str:
 
 
 def _parse_json(text: str) -> dict:
-    # Try to find the last complete JSON block
-    try:
-        start = text.rfind("{")
-        end = text.rfind("}") + 1
-        if start != -1 and end > start:
-            return json.loads(text[start:end])
-    except (json.JSONDecodeError, ValueError):
-        pass
-    # Try finding any JSON block from the start
+    # Find the outermost JSON object at the end of the text via a balanced-brace
+    # scan back from the last "}". (rfind alone breaks on nested objects like
+    # line_items, grabbing only the last inner object.)
+    end = text.rfind("}")
+    if end != -1:
+        depth = 0
+        for i in range(end, -1, -1):
+            c = text[i]
+            if c == "}":
+                depth += 1
+            elif c == "{":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(text[i:end + 1])
+                    except (json.JSONDecodeError, ValueError):
+                        break
+    # Fallback: any flat JSON object
     try:
         import re
         match = re.search(r'\{[^{}]*\}', text, re.DOTALL)

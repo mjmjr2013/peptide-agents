@@ -8,6 +8,7 @@ class AirtableClient:
 
     TABLE_LEADS = "Leads"
     TABLE_ORDERS = "Orders"
+    TABLE_ORDER_ITEMS = "Order Items"
     TABLE_LABS = "Labs"
     TABLE_CAMPAIGNS = "Campaigns"
 
@@ -33,6 +34,10 @@ class AirtableClient:
     @property
     def campaigns(self):
         return self.table(self.TABLE_CAMPAIGNS)
+
+    @property
+    def order_items(self):
+        return self.table(self.TABLE_ORDER_ITEMS)
 
     # ── Leads ──────────────────────────────────────────────────────────────
 
@@ -87,6 +92,119 @@ class AirtableClient:
 
     def get_orders_by_status(self, status: str) -> list[dict]:
         return self.orders.all(formula=f"{{status}}='{status}'")
+
+    # ── Fulfillment orders (multi-item, crypto-verified, weekly-batched) ─────
+
+    @staticmethod
+    def week_tag(dt=None) -> str:
+        """Tag for the current Sun–Sat week, as the ending-Saturday date (report TZ)."""
+        from datetime import datetime, timedelta
+        try:
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo(settings.report_timezone)
+        except Exception:
+            tz = None
+        now = dt or datetime.now(tz)
+        offset = (5 - now.weekday()) % 7  # weekday: Mon=0..Sun=6; Sat=5
+        return (now + timedelta(days=offset)).strftime("%Y-%m-%d")
+
+    def allocate_unique_amount(self, base_usd: float, coin: str) -> tuple[float, float]:
+        """Return (usd_charge, expected_amount). usd_charge = base + a cents tail not
+        currently in use among awaiting orders, so each payment maps to one order.
+        expected_amount is in the coin's units (USDT≈USD; BTC via live rate)."""
+        used = {round(float(o["fields"].get("total_price") or 0), 2)
+                for o in self.get_awaiting_orders()}
+        charge = round(base_usd, 2)
+        for cents in range(1, 100):
+            cand = round(float(int(base_usd)) + cents / 100, 2)
+            if cand not in used:
+                charge = cand
+                break
+        if coin.upper() == "BTC":
+            from core.crypto_verify import usd_to_btc
+            expected = usd_to_btc(charge) or 0.0
+        else:
+            expected = charge
+        return charge, expected
+
+    def create_pending_order(self, lead_id: str, ship_phone: str, items: list[dict],
+                             total_usd: float, coin: str, expected_amount: float,
+                             order_ref: str, week: str) -> dict:
+        """items: [{product, spec, kits, line_total, sku}]. Creates the Order (awaiting
+        payment) plus one Order Item row per product."""
+        summary = ", ".join(f"{int(i['kits'])}x {i['product']} {i['spec']}".strip() for i in items)
+        order = self.orders.create({
+            "order_ref": order_ref,
+            "lead_id": [lead_id],
+            "product": summary,
+            "total_price": total_usd,
+            "coin": coin.upper(),
+            "expected_amount": expected_amount,
+            "payment_status": "awaiting",
+            "fulfillment_status": "recorded",
+            "status": "Pending",
+            "week_tag": week,
+            "ship_phone": ship_phone,
+        })
+        for it in items:
+            self.order_items.create({
+                "item": f"{order_ref} · {it['product']} {it['spec']}".strip(),
+                "Order": [order["id"]],
+                "product": it["product"],
+                "spec": it.get("spec", ""),
+                "kits": int(it["kits"]),
+                "supplier_sku": it.get("sku") or "",
+                "line_total": it.get("line_total") or 0,
+            })
+        return order
+
+    def mark_order_paid(self, order_id: str, tx_hash: str, paid_at_iso: str) -> dict:
+        return self.orders.update(order_id, {
+            "payment_status": "paid", "tx_hash": tx_hash, "paid_at": paid_at_iso,
+        })
+
+    def set_order_shipping(self, order_id: str, **addr) -> dict:
+        allowed = {"ship_name", "address_line1", "address_line2", "city",
+                   "state_province", "postal_code", "country"}
+        return self.orders.update(order_id, {k: v for k, v in addr.items() if k in allowed and v})
+
+    def get_awaiting_orders(self) -> list[dict]:
+        return self.orders.all(formula="{payment_status}='awaiting'")
+
+    def get_paid_orders_for_week(self, week: str) -> list[dict]:
+        return self.orders.all(formula=f"AND({{payment_status}}='paid',{{week_tag}}='{week}')")
+
+    def get_unbulked_paid_orders(self) -> list[dict]:
+        """Paid orders not yet rolled into a supplier bulk order (weekly cadence)."""
+        return self.orders.all(formula="AND({payment_status}='paid',NOT({bulk_ordered}))")
+
+    def get_unmanifested_paid_orders(self) -> list[dict]:
+        """Paid orders not yet sent to the warehouse on a manifest (daily cadence)."""
+        return self.orders.all(formula="AND({payment_status}='paid',NOT({manifested}))")
+
+    def mark_bulk_ordered(self, order_ids: list[str]) -> None:
+        for oid in order_ids:
+            try:
+                self.orders.update(oid, {"bulk_ordered": True, "fulfillment_status": "in_bulk_order"})
+            except Exception as e:
+                print(f"[airtable] mark_bulk_ordered {oid} failed: {e}")
+
+    def mark_manifested(self, order_ids: list[str]) -> None:
+        for oid in order_ids:
+            try:
+                self.orders.update(oid, {"manifested": True})
+            except Exception as e:
+                print(f"[airtable] mark_manifested {oid} failed: {e}")
+
+    def get_items_for_order(self, order_record: dict) -> list[dict]:
+        ids = order_record["fields"].get("Order Items", [])
+        out = []
+        for rid in ids:
+            try:
+                out.append(self.order_items.get(rid))
+            except Exception:
+                pass
+        return out
 
     # ── Labs ───────────────────────────────────────────────────────────────
 

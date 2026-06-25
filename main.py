@@ -9,7 +9,6 @@ import sys
 
 from agents.ad_agent import run_ad_agent
 from agents.lead_gen_agent import run_lead_gen_agent
-from agents.fulfillment_agent import route_all_pending_orders
 from agents.tracking_agent import check_and_notify_all
 
 
@@ -31,13 +30,38 @@ def run_lead_gen_loop(interval: int = 21600):  # every 6 hours
         time.sleep(interval)
 
 
-def run_fulfillment_loop(interval: int = 120):
+def _report_tz():
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(os.environ.get("REPORT_TIMEZONE", "America/Denver"))
+    except Exception:
+        return None
+
+
+def run_report_scheduler():
+    """Fire fulfillment reports from inside the webhook process (prod mode):
+      • Warehouse manifest — DAILY at DAILY_MANIFEST_HOUR (default 07:00, report TZ).
+      • Supplier bulk order — WEEKLY at Sunday 00:00 (week just closed).
+    Guarded so each fires at most once per day / per week."""
+    from datetime import datetime
+    from agents.weekly_report import run_daily_manifest, run_supplier_bulk
+    tz = _report_tz()
+    daily_hour = int(os.environ.get("DAILY_MANIFEST_HOUR", "7"))
+    last_manifest_day = None
+    last_bulk_week = None
     while True:
         try:
-            route_all_pending_orders()
+            now = datetime.now(tz)
+            day = now.strftime("%Y-%m-%d")
+            if now.hour == daily_hour and last_manifest_day != day:
+                print(f"[Main/Reports] daily manifest {day}:", run_daily_manifest())
+                last_manifest_day = day
+            if now.weekday() == 6 and now.hour == 0 and last_bulk_week != day:  # Sunday 00:xx
+                print(f"[Main/Reports] weekly supplier bulk {day}:", run_supplier_bulk())
+                last_bulk_week = day
         except Exception as e:
-            print(f"[Main/FulfillmentAgent] {e}")
-        time.sleep(interval)
+            print(f"[Main/Reports] {e}")
+        time.sleep(300)  # check every 5 minutes
 
 
 def run_tracking_loop(interval: int = 600):
@@ -149,6 +173,10 @@ def start_webhook_server(port: int = 5000):
         def health():
             return {"status": "ok"}, 200
 
+        # Fulfillment report scheduler (daily manifest + weekly bulk) runs in-process.
+        threading.Thread(target=run_report_scheduler, daemon=True).start()
+        print("[Main] Report scheduler started (daily manifest + weekly bulk)")
+
         print(f"[Main] Webhook server starting on port {port}")
         app.run(host="0.0.0.0", port=port, debug=False)
     except ImportError:
@@ -171,8 +199,14 @@ def main():
         run_lead_gen_agent()
         return
 
-    if mode == "fulfillment":
-        run_fulfillment_loop()
+    if mode in ("weekly", "daily", "report"):  # one-shot report runs
+        from agents.weekly_report import run_for_week, run_supplier_bulk, run_daily_manifest
+        if mode == "weekly":
+            print(run_supplier_bulk())
+        elif mode == "daily":
+            print(run_daily_manifest())
+        else:  # report <week-tag>
+            print(run_for_week(sys.argv[2]))
         return
 
     if mode == "tracking":
@@ -185,7 +219,7 @@ def main():
     threads = [
         threading.Thread(target=run_ad_loop, daemon=True),
         threading.Thread(target=run_lead_gen_loop, daemon=True),
-        threading.Thread(target=run_fulfillment_loop, daemon=True),
+        threading.Thread(target=run_report_scheduler, daemon=True),
         threading.Thread(target=run_tracking_loop, daemon=True),
     ]
 

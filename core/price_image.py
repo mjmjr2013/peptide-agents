@@ -229,6 +229,22 @@ def get_image_price(product: str, spec: str = "") -> float | None:
     return _IMAGE_PRICE_INDEX.get((_norm_product(product), _norm_dose(spec)))
 
 
+def _build_sku_index() -> dict:
+    idx: dict[tuple[str, str], str] = {}
+    for _cat, _items in CATEGORIES:
+        for _code, _product, _spec, _pstr in _items:
+            idx[(_norm_product(_product), _norm_dose(_spec))] = _code
+    return idx
+
+
+_SKU_INDEX = _build_sku_index()
+
+
+def get_sku(product: str, spec: str = "") -> str | None:
+    """The catalog SKU (Cat. No.) for a product/spec, for the supplier order."""
+    return _SKU_INDEX.get((_norm_product(product), _norm_dose(spec)))
+
+
 def generate_price_list_image(lang: str = "en") -> Path:
     import matplotlib
     matplotlib.use("Agg")

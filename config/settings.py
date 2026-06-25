@@ -38,6 +38,16 @@ class Settings:
     # Supplier
     supplier_whatsapp: str = os.environ.get("SUPPLIER_WHATSAPP", "")
 
+    # Crypto receiving addresses (public). Payments are verified read-only on-chain.
+    # USDT is accepted on Ethereum (ERC-20) — your Phantom ETH address receives it.
+    eth_address: str = os.environ.get("ETH_ADDRESS", "")
+    etherscan_api_key: str = os.environ.get("ETHERSCAN_API_KEY", "")
+    btc_address: str = os.environ.get("BTC_ADDRESS", "")
+
+    # Weekly fulfillment reports
+    report_email: str = os.environ.get("REPORT_EMAIL", "") or os.environ.get("SENDGRID_FROM_EMAIL", "")
+    report_timezone: str = os.environ.get("REPORT_TIMEZONE", "America/Denver")
+
     # Sales — where to alert when a large order (>100 kits) needs manual handoff.
     # Accepts a plain SMS number (+1...) or a WhatsApp address (whatsapp:+1...).
     handoff_notify_number: str = os.environ.get("HANDOFF_NOTIFY_NUMBER", "")
