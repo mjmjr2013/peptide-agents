@@ -39,7 +39,10 @@ Output JSON:
   "email_body": "..."
 }"""
 
-sg_client = sendgrid.SendGridAPIClient(api_key=settings.sendgrid_api_key)
+# Legacy buyer-notification path (not started in prod). SendGrid was retired in
+# favour of Gmail SMTP for reports; this client is kept inert so the module still
+# imports. getattr fallback avoids a hard crash if the setting is absent.
+sg_client = sendgrid.SendGridAPIClient(api_key=getattr(settings, "sendgrid_api_key", "") or "disabled")
 twilio_client = TwilioClient(settings.twilio_account_sid, settings.twilio_auth_token)
 
 # Track last-known status to detect changes
@@ -192,7 +195,7 @@ def _send_sms(to: str, body: str) -> dict:
 def _send_email(to_email: str, to_name: str, subject: str, body: str) -> dict:
     try:
         message = Mail(
-            from_email=Email(settings.sendgrid_from_email, settings.company_name),
+            from_email=Email(getattr(settings, "gmail_user", ""), settings.company_name),
             to_emails=To(to_email, to_name),
             subject=subject,
             plain_text_content=Content("text/plain", body),

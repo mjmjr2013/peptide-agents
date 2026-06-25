@@ -31,12 +31,18 @@ class Settings:
     twilio_phone_number: str = os.environ.get("TWILIO_PHONE_NUMBER", "")
     twilio_whatsapp_from: str = os.environ.get("TWILIO_WHATSAPP_FROM", "")
 
-    # SendGrid
-    sendgrid_api_key: str = os.environ.get("SENDGRID_API_KEY", "")
-    sendgrid_from_email: str = os.environ.get("SENDGRID_FROM_EMAIL", "")
+    # Email (Gmail SMTP via Google Workspace). GMAIL_USER is the full address the
+    # report is sent FROM (e.g. jordan@northlinesupplies.com); GMAIL_APP_PASSWORD is
+    # a 16-char Google App Password (account → Security → App passwords).
+    gmail_user: str = os.environ.get("GMAIL_USER", "")
+    gmail_app_password: str = os.environ.get("GMAIL_APP_PASSWORD", "")
 
     # Supplier
     supplier_whatsapp: str = os.environ.get("SUPPLIER_WHATSAPP", "")
+
+    # Warehouse — the daily shipping manifest is sent here over WhatsApp (not email).
+    # Use the whatsapp: scheme, e.g. "whatsapp:+8613418806654".
+    warehouse_whatsapp: str = os.environ.get("WAREHOUSE_WHATSAPP", "")
 
     # Crypto receiving addresses (public). Payments are verified read-only on-chain.
     # USDT is accepted on Ethereum (ERC-20) — your Phantom ETH address receives it.
@@ -44,8 +50,10 @@ class Settings:
     etherscan_api_key: str = os.environ.get("ETHERSCAN_API_KEY", "")
     btc_address: str = os.environ.get("BTC_ADDRESS", "")
 
-    # Weekly fulfillment reports
-    report_email: str = os.environ.get("REPORT_EMAIL", "") or os.environ.get("SENDGRID_FROM_EMAIL", "")
+    # Weekly fulfillment reports. REPORT_EMAIL may be a comma-separated list.
+    report_emails: list[str] = [
+        e.strip() for e in (os.environ.get("REPORT_EMAIL", "") or os.environ.get("GMAIL_USER", "")).split(",") if e.strip()
+    ]
     report_timezone: str = os.environ.get("REPORT_TIMEZONE", "America/Denver")
 
     # Sales — where to alert when a large order (>100 kits) needs manual handoff.

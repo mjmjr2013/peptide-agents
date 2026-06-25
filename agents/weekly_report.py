@@ -4,18 +4,18 @@ Fulfillment reports — two independent cadences, two separate audiences:
 
   • Warehouse manifest — DAILY. Per-order customer + address + items so the warehouse
     can make shipping labels and send tracking to clients fast. NO costs/supplier info.
+    Sent over WhatsApp (Twilio) to settings.warehouse_whatsapp.
   • Supplier bulk order — WEEKLY. Total kits per product (SKU) to purchase from the
-    supplier. NO customer names/addresses/prices.
+    supplier. NO customer names/addresses/prices. Emailed (SendGrid) to
+    settings.report_emails for you/your brother to review and forward to the supplier.
 
 Each run selects only orders not yet processed for THAT cadence (independent flags
-`manifested` and `bulk_ordered`), so nothing is missed or double-counted. Files are
-emailed (SendGrid) to settings.report_email for you to review and forward.
+`manifested` and `bulk_ordered`), so nothing is missed or double-counted.
 """
-import base64
 import io
 import json
-import urllib.request
-import urllib.error
+import smtplib
+from email.message import EmailMessage
 from datetime import datetime
 
 from openpyxl import Workbook
@@ -66,42 +66,87 @@ def build_warehouse_manifest(orders: list[dict], label: str) -> bytes:
 
 
 def _send_email(subject: str, body: str, attachments: list[tuple[str, bytes]]) -> bool:
-    if not (settings.sendgrid_api_key and settings.report_email and settings.sendgrid_from_email):
-        print("[reports] SendGrid not configured (SENDGRID_API_KEY/SENDGRID_FROM_EMAIL/REPORT_EMAIL) — skipping email")
+    recipients = settings.report_emails
+    if not (settings.gmail_user and settings.gmail_app_password and recipients):
+        print("[reports] Gmail SMTP not configured (GMAIL_USER/GMAIL_APP_PASSWORD/REPORT_EMAIL) — skipping email")
         return False
-    payload = {
-        "personalizations": [{"to": [{"email": settings.report_email}]}],
-        "from": {"email": settings.sendgrid_from_email},
-        "subject": subject,
-        "content": [{"type": "text/plain", "value": body}],
-        "attachments": [{"content": base64.b64encode(d).decode(), "filename": n,
-                         "type": _XLSX_CT, "disposition": "attachment"} for n, d in attachments],
-    }
-    req = urllib.request.Request("https://api.sendgrid.com/v3/mail/send", data=json.dumps(payload).encode(),
-        headers={"Authorization": f"Bearer {settings.sendgrid_api_key}", "Content-Type": "application/json"}, method="POST")
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = settings.gmail_user
+    msg["To"] = ", ".join(recipients)
+    msg.set_content(body)
+    for name, data in attachments:
+        maintype, subtype = _XLSX_CT.split("/", 1)
+        msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=name)
     try:
-        urllib.request.urlopen(req, timeout=20)
-        print(f"[reports] emailed '{subject}' to {settings.report_email}")
+        with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as s:
+            s.starttls()
+            s.login(settings.gmail_user, settings.gmail_app_password)
+            s.send_message(msg)
+        print(f"[reports] emailed '{subject}' to {', '.join(recipients)}")
         return True
-    except urllib.error.HTTPError as e:
-        print(f"[reports] SendGrid error {e.code}: {e.read().decode()[:200]}")
+    except Exception as e:
+        print(f"[reports] SMTP send failed: {e!r}")
+        return False
+
+
+def build_warehouse_whatsapp(orders: list[dict], label: str) -> list[str]:
+    """Per-order customer + address + items as WhatsApp text. No costs/supplier.
+
+    Returns a list of message chunks (WhatsApp body cap ~1600 chars), one order
+    never split across chunks."""
+    header = f"📦 Northline shipping manifest — {label}\n{len(orders)} order(s) to label & ship:\n"
+    blocks = []
+    for o in sorted(orders, key=lambda x: x["fields"].get("order_ref", "")):
+        f = o["fields"]
+        items = "\n".join(f"  • {int(it['fields'].get('kits') or 0)}x {it['fields'].get('product','')} "
+                          f"{it['fields'].get('spec','')}".rstrip() for it in airtable.get_items_for_order(o))
+        addr = "\n".join(x for x in [f.get("address_line1"), f.get("address_line2"),
+               " ".join(y for y in [f.get("city"), f.get("state_province"), f.get("postal_code")] if y),
+               f.get("country")] if x)
+        phone = f.get("ship_phone", "")
+        blocks.append(f"\n──────────\n*{f.get('order_ref','')}* — {f.get('ship_name','')}\n"
+                      f"{addr}\n{('☎ ' + phone) if phone else ''}\nItems:\n{items}".rstrip())
+    chunks, cur = [], header
+    for b in blocks:
+        if len(cur) + len(b) > 1500:
+            chunks.append(cur); cur = ""
+        cur += b
+    if cur.strip():
+        chunks.append(cur)
+    return chunks
+
+
+def _send_whatsapp(chunks: list[str]) -> bool:
+    if not (settings.warehouse_whatsapp and settings.twilio_whatsapp_from):
+        print("[reports] WhatsApp not configured (WAREHOUSE_WHATSAPP/TWILIO_WHATSAPP_FROM) — skipping daily manifest send")
+        return False
+    from agents.messaging_agent import twilio_client
+    to = settings.warehouse_whatsapp
+    if not to.startswith("whatsapp:"):
+        to = "whatsapp:" + to
+    try:
+        for c in chunks:
+            msg = twilio_client.messages.create(body=c, from_=settings.twilio_whatsapp_from, to=to)
+            print(f"[reports] WhatsApp manifest chunk to {to} SID={msg.sid}")
+        return True
+    except Exception as e:
+        print(f"[reports] WhatsApp send failed: {e!r}")
         return False
 
 
 def run_daily_manifest() -> dict:
-    """DAILY: warehouse manifest for all paid orders not yet manifested."""
+    """DAILY: warehouse manifest for all paid orders not yet manifested. Sent via WhatsApp."""
     orders = airtable.get_unmanifested_paid_orders()
     if not orders:
         print("[reports] daily manifest: no new paid orders")
-        return {"manifest_orders": 0, "emailed": False}
+        return {"manifest_orders": 0, "sent": False}
     day = datetime.now().strftime("%Y-%m-%d")
-    data = build_warehouse_manifest(orders, day)
-    body = (f"Warehouse shipping manifest — {day}\nNew paid orders to label & ship: {len(orders)}\n\n"
-            f"Attached: warehouse_manifest_{day}.xlsx (customer names, addresses, items).")
-    emailed = _send_email(f"Northline warehouse manifest — {day}", body,
-                          [(f"warehouse_manifest_{day}.xlsx", data)])
-    airtable.mark_manifested([o["id"] for o in orders])
-    return {"manifest_orders": len(orders), "emailed": emailed}
+    chunks = build_warehouse_whatsapp(orders, day)
+    sent = _send_whatsapp(chunks)
+    if sent:
+        airtable.mark_manifested([o["id"] for o in orders])
+    return {"manifest_orders": len(orders), "sent": sent}
 
 
 def run_supplier_bulk() -> dict:
