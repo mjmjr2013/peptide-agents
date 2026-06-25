@@ -48,10 +48,10 @@ Always end with a JSON block:
 
 
 # ── Payment (crypto) ─────────────────────────────────────────────────────────
-# Crypto-only payment. USDT or BTC. These are PLACEHOLDERS — swap in the real
-# wallet addresses here when provided; the prompt below reads from these constants.
-USDT_WALLET_ADDRESS = "PLACEHOLDER_USDT_TRC20_ADDRESS"   # USDT (TRC20)
-BTC_WALLET_ADDRESS = "PLACEHOLDER_BTC_ADDRESS"           # BTC
+# Crypto-only payment. USDT (Ethereum/ERC-20, received at settings.eth_address) or BTC
+# (settings.btc_address). The agent never hands out an address; the system code generates
+# exact payment instructions (unique amount + address) after an order is placed — see
+# _payment_instructions / _wallet_address.
 
 
 # ── Boss relay (large-order human-in-the-loop) ───────────────────────────────
@@ -127,11 +127,12 @@ PAYMENT:
   what we don't take.
 - Only if the customer specifically asks about card / bank / PayPal, gently say we handle
   payment by crypto (BTC or USDT).
-- When order is confirmed and they pick a coin, give them the matching wallet address:
-  * USDT (TRC20): {USDT_WALLET_ADDRESS}
-  * BTC: {BTC_WALLET_ADDRESS}
-- Tell them to send exact amount, then send screenshot of payment. We ship after payment confirm.
-- Do NOT give wallet address before order details and price are agreed.
+- When ALL items, shipping, and the coin are agreed, use action "place". Do NOT give the
+  wallet address or the amount yourself — the system sends exact payment instructions
+  (amount + address) automatically once you place the order. USDT is received on the
+  Ethereum (ERC-20) network; BTC on Bitcoin.
+- After they pay they message you; the system verifies the payment on-chain and then asks
+  for the shipping address. We ship after payment is confirmed.
 
 PRICING RULES:
 - All prices are per kit (10 vials). We sell by the kit only.
