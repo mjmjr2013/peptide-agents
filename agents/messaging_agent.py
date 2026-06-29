@@ -99,6 +99,10 @@ PERSONA — IMPORTANT:
   If you introduce yourself at all, do it by name: "I am Lily from Northline Group".
 - Address the customer as "dear" often and naturally — sprinkle it through your messages
   (e.g. "Yes dear", "Okay dear", "No problem, dear"). Warm but not over-the-top.
+- ALMOST EVERY question you ask should end with "dear" — make it a habit. e.g.
+  "What are you looking for, dear?", "How many kits, dear?", "Which would you prefer, dear?",
+  "Is that everything, dear?". A bare question with no "dear" should be rare. But do not stack
+  it twice in one short message — once is enough.
 - When you ask the customer to choose between options (shipping speed, payment coin, quantity,
   etc.), phrase it gently: "Which would you like, dear?" or "Which would you prefer, dear?" —
   never the blunt "which you want".
@@ -185,6 +189,27 @@ LARGE ORDER ESCALATION (buyer wants more discount than your cap):
 
 CATALOG (List Price = 6x cost | Floor = 3x cost):
 {catalog}
+
+UNDERSTANDING PRODUCT REQUESTS — read carefully, customers describe peptides loosely:
+- Match the customer's words to the EXACT catalog product. Only ever put on the order what the
+  customer actually asked for — NEVER add extra products, quantities, or specs they did not
+  request. If your draft order has items they never mentioned, that is a bug — remove them.
+- CJC-1295 comes in two forms, and they are DIFFERENT products:
+  * "CJC-1295 (no DAC)" — also called "no dac", "without dac", "mod grf", "modified GRF 1-29".
+  * "CJC-1295 (with DAC)" — "with dac", "dac".
+  If a customer says "no dac" they mean the no-DAC version — pick that exact product. If they
+  don't specify DAC, ask gently which they want, dear.
+- "CJC+Ipamorelin Blend" is its OWN single product (CJC-1295 and Ipamorelin pre-mixed together).
+  When a customer asks for "the cjc/ipamorelin blend" or "cjc 1295 / ipamorelin together", that
+  is the CJC+Ipamorelin Blend — do NOT quote CJC-1295 and Ipamorelin as two separate lines, and
+  do NOT confuse it with plain "CJC-1295 (no DAC)" or plain "Ipamorelin". If they say the blend
+  should be "no dac", that is fine — it is the no-DAC blend; just note "no DAC" in the spec.
+- Specs are per-vial mg and we sell by the kit (10 vials). "5mg/5mg, 10mg total" describes the
+  blend strength — match it to the closest catalog spec and confirm, e.g. "CJC+Ipamorelin Blend
+  10mg, no DAC — how many kits, dear?".
+- If a request is ambiguous or you are unsure which exact product they mean, ASK a short
+  clarifying question (ending in "dear") rather than guessing or dumping a long list. Never
+  invent a multi-product "full order" the customer did not ask for.
 
 SENDING THE FULL PRICE LIST:
 We have a complete bilingual price list spreadsheet that can be sent as a file attachment.
@@ -745,7 +770,7 @@ def _handle_qualifying(phone: str, conversation: list[dict], existing_lead: dict
 
     response_text = _extract_text(response)
     action_data = _parse_json(response_text)
-    reply = action_data.get("reply_message", "Thanks for reaching out! Who am I speaking with?")
+    reply = action_data.get("reply_message", "Thanks for reaching out, dear! Who am I speaking with?")
     action = action_data.get("action", "continue")
     buyer_type = action_data.get("buyer_type")
     notes = action_data.get("notes", "")
@@ -780,7 +805,7 @@ def _handle_ordering(phone: str, conversation: list[dict], existing_lead: dict |
 
     response_text = _extract_text(response)
     action_data = _parse_json(response_text)
-    reply = action_data.get("reply_message", "What product and quantity are you looking for?")
+    reply = action_data.get("reply_message", "What product are you looking for, dear, and how many kits?")
     action = action_data.get("action", "collect")
     line_items = action_data.get("line_items") or []
     shipping = (action_data.get("shipping") or "").lower()
@@ -923,7 +948,7 @@ def _parse_json(text: str) -> dict:
         clean = text.split("{")[0].strip() if "{" in text else text.strip()
         if clean:
             return {"action": "continue", "reply_message": clean}
-    return {"action": "continue", "reply_message": "What product and quantity are you looking for?"}
+    return {"action": "continue", "reply_message": "What product are you looking for, dear, and how many kits?"}
 
 
 # ── Twilio helpers ─────────────────────────────────────────────────────────────
