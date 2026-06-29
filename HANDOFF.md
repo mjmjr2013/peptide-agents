@@ -4,10 +4,11 @@ Paste this into a fresh Claude Code session (run from `~/peptide-agents`) to con
 It describes the live WhatsApp sales agent, the new order/payment/fulfillment system,
 how to deploy/debug, and what's outstanding. No secret tokens are stored here.
 
-Last updated after **going live** + adding conversation transcript logging: order-intake +
-crypto-payment + fulfillment-reports system is **deployed to prod** (commit `e0ebb30`, `/health` ok).
-All env vars set in Railway; base purged of test data. Remaining: run the $2–3 live USDT end-to-end
-test (§14) and build the shipping-notification feature (§16, in design). See §13/§14/§16.
+Last updated after **going live** + transcript logging + persona/UX hardening from Daniel's live
+test: order-intake + crypto-payment + fulfillment-reports system is **deployed to prod** (commit
+`308f06e7`, `/health` ok). All env vars set in Railway; base purged of test data. Remaining: run the
+$2–3 live USDT end-to-end test (§14) and build the shipping-notification feature (§16, in design).
+See §9 (persona), §13/§14/§16.
 
 ---
 
@@ -99,9 +100,21 @@ NAD+ is a manual loss-leader: $55 / $135 / $195 (3–4× cost). Audit: catalog m
 Wallet/crypto receiving addresses are **set in Railway** (`ETH_ADDRESS`, `BTC_ADDRESS` — see §14). The
 agent never hands out an address; the code generates exact payment instructions after a placed order.
 
-## 9. Persona / tone
-Warm kind Chinese-woman agent, frequent "dear"; greets on first contact; offers choices as
-"which would you like, dear?"; positive payment framing; never reveals discount % or tiers; no promo in greeting.
+## 9. Persona / tone (`_build_order_prompt` in `agents/messaging_agent.py`)
+Warm kind Chinese woman **named Lily**, light ESL flavor, frequent "dear" (almost every question
+ends in "dear"); offers choices as "which would you like, dear?"; positive payment framing; never
+reveals discount % or tiers; no promo in greeting.
+- **Never self-identifies as a bot/AI/"agent"** — she is a real person, Lily; deflects "are you a
+  robot?" warmly. (Earlier prod build literally said "I am a service agent" — fixed.)
+- **Greets only ONCE per conversation** and varies wording. A per-phone lock in `twilio_webhook_handler`
+  serializes rapid back-to-back inbound messages (was double-greeting on a race), plus duplicate-reply
+  suppression (`_last_outbound`) drops an outbound identical to the previous one. Both cleared on RESET.
+- **Think-first:** the order-prompt JSON's FIRST field is `thinking` (private scratchpad, never sent) so
+  she reasons before composing `reply_message`. (The Claude client also has native extended thinking on.)
+- **Product disambiguation** (from Daniel's live test): match loose customer wording to the EXACT catalog
+  item; CJC+Ipamorelin Blend is ONE product (not two lines); CJC-1295 "no DAC" vs "with DAC" are distinct;
+  NEVER add line items the customer didn't ask for; ask a short clarifying question when unsure instead of
+  guessing or dumping a long "full order".
 
 ## 10. Deployment (Railway) — auto-deploy is FLAKY
 1. Commit, `git push origin main`. If prices changed, regenerate sheet into `static/` and commit it:
@@ -123,13 +136,14 @@ Railway IDs — project `c3856be2-a3fa-4184-a096-7f8f36f6e762`, service `4336f9e
 - Airtable PAT `pat…` (in Railway `AIRTABLE_API_KEY`); base `apprMJI8obXHOLvJU`.
 - WABA id `1010468724997939`; HK regulatory bundle `BUad64de52410298f0c0252f7c651b9534`.
 
-## 13. Current state (DEPLOYED — commit `e0ebb30`)
+## 13. Current state (DEPLOYED — commit `308f06e7`)
 All of §4–§7 is implemented and **deployed to prod** (force-deployed by SHA; `/health` ok). All env
 vars in §14 are set in Railway. Email path live-tested (Gmail SMTP to both recipients OK). Conversation
-transcript logging to the Messages table is live (§6). Test data purged; base is clean. Decommissioned
-the stale `order_intake_agent` + supplier-leaking `fulfillment_agent`. **Not yet done:** the $2–3 live
-USDT end-to-end test (the only remaining gate before treating this as fully proven in prod), and the
-shipping-notification feature (§16, still in design).
+transcript logging to the Messages table is live (§6). Persona/UX hardened per Daniel's live test (§9:
+Lily, no bot self-ID, greet-once, think-first, CJC-blend/no-DAC product understanding, more "dear").
+Test data purged; base is clean. Decommissioned the stale `order_intake_agent` + supplier-leaking
+`fulfillment_agent`. **Not yet done:** the $2–3 live USDT end-to-end test (the only remaining gate
+before treating this as fully proven in prod), and the shipping-notification feature (§16, in design).
 
 ## 14. Open items / TODO
 **Env vars now SET in Railway (all of these are live):**
