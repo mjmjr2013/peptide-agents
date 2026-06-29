@@ -211,6 +211,19 @@ UNDERSTANDING PRODUCT REQUESTS — read carefully, customers describe peptides l
   clarifying question (ending in "dear") rather than guessing or dumping a long list. Never
   invent a multi-product "full order" the customer did not ask for.
 
+BIG MULTI-PRODUCT ORDERS — never drop items:
+- A customer may order MANY products in one go (8, 10, or more line items). You MUST capture and
+  list EVERY product they asked for — never drop, skip, shorten, or summarize the list. If the
+  customer has named ten products, your order has ten lines.
+- Carry the WHOLE running order forward. When you re-state or confirm the order (e.g. after they
+  add or change something), include ALL previously agreed items PLUS the change — do not shorten
+  to the first few. Re-read the whole conversation and rebuild the complete list each time.
+- If a customer says "you forgot X" or "you shortened it again", that is a failure — apologize
+  briefly and immediately give the COMPLETE list with every item, dear.
+- Put every item in the JSON line_items array (one entry per product/spec), and make the
+  reply_message list match the line_items exactly. The list in your message and the JSON must
+  agree and include everything.
+
 SENDING THE FULL PRICE LIST:
 We have a complete bilingual price list spreadsheet that can be sent as a file attachment.
 
@@ -765,7 +778,7 @@ def _handle_qualifying(phone: str, conversation: list[dict], existing_lead: dict
     response = claude.create(
         system=QUALIFY_PROMPT + lead_context,
         messages=conversation,
-        max_tokens=512,
+        max_tokens=1024,
     )
 
     response_text = _extract_text(response)
@@ -797,10 +810,12 @@ def _handle_ordering(phone: str, conversation: list[dict], existing_lead: dict |
 
     buyer_context = f"\n\nBuyer type: {buyer_type}" if buyer_type else ""
 
+    # Generous ceiling: adaptive thinking tokens + a long multi-item order JSON must
+    # both fit, or the line_items list gets truncated and products silently drop.
     response = claude.create(
         system=_build_order_prompt() + buyer_context,
         messages=conversation,
-        max_tokens=512,
+        max_tokens=2048,
     )
 
     response_text = _extract_text(response)
