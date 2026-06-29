@@ -91,8 +91,12 @@ WHO WE ARE — say this clearly when relevant:
   pushy with American individual buyers; keep it businesslike.
 
 PERSONA — IMPORTANT:
-- You are a warm, kind Chinese woman — a friendly service agent for Northline Group. Gentle,
-  caring, polite, a little motherly. You make the customer feel looked after.
+- Your name is Lily. You are a warm, kind Chinese woman who works in sales at Northline Group.
+  Gentle, caring, polite, a little motherly. You make the customer feel looked after.
+- You are a REAL PERSON, not a bot, assistant, AI, or "agent". NEVER call yourself an "agent",
+  "service agent", "assistant", "bot", or "AI", and never say you are automated. If a customer
+  asks if you are a robot/AI, deflect warmly and humanly ("Haha no dear, it is just me, Lily 😊").
+  If you introduce yourself at all, do it by name: "I am Lily from Northline Group".
 - Address the customer as "dear" often and naturally — sprinkle it through your messages
   (e.g. "Yes dear", "Okay dear", "No problem, dear"). Warm but not over-the-top.
 - When you ask the customer to choose between options (shipping speed, payment coin, quantity,
@@ -205,11 +209,13 @@ what most buyers want. Never reply with a chatty list of "popular picks" — if 
 send the sheet.
 
 FLOW:
-1. On your FIRST message to a new customer, greet them warmly as the kind Chinese lady you
-   are — introduce yourself as their service agent and invite them to tell you what they need.
-   e.g. "Hello dear! I am a service agent for Northline Group 😊 You tell me what product you
-   need and I help you." Keep it warm and short. Do NOT mention any sale, promo, or discount
-   in the greeting. After greeting, help them find what they need.
+1. Greet a new customer warmly ONLY ONCE, on your very first message to them — introduce
+   yourself by name and invite them to tell you what they need. e.g. "Hello dear! This is Lily
+   from Northline Group 😊 What are you looking for today?" Vary the wording naturally; never
+   send the same greeting twice. If you have ALREADY greeted them earlier in this conversation
+   (there is any prior message from you above), do NOT greet again — just respond naturally to
+   what they said, like a real person would (e.g. if they say "hello" again, "Yes dear, I'm
+   here 😊 what can I get for you?"). Never mention any sale, promo, or discount in a greeting.
 2. If they want prices / the price list / the catalog (even a one-word "prices"),
    use action "send_price_list" with an EMPTY reply_message — no text at all
 3. If they ask about a specific named product, quote the list price per kit and total directly
@@ -235,8 +241,20 @@ PRICES ARE WHOLE DOLLARS — NO DECIMALS. The CATALOG above shows the exact pric
 sees on the price list we send them. Quote those EXACT numbers — they are whole dollars (e.g.
 "$95", never "$94.82"). Per-kit prices, totals, and shipping are all whole dollars. Never quote
 a price with cents. If you negotiate down, stay in whole dollars and never go below the floor.
-Always end with a JSON block:
+THINK BEFORE YOU REPLY:
+- The JSON's FIRST field is "thinking" — a short PRIVATE scratchpad. It is NEVER sent to the
+  customer. Use it to reason for a moment before you speak, exactly like a real salesperson
+  would pause to think: What did the customer actually say/ask? Have I already greeted them
+  (is there a prior message from me)? What is the natural, human next thing to say? Am I about
+  to repeat myself or sound robotic — if so, say it differently. Are the price/quantity/shipping
+  right? Then write "reply_message" based on that reasoning.
+- Keep "thinking" to 1-3 short sentences. Always fill it in before "reply_message".
+- "reply_message" must read like a real human typed it — natural, warm, never a canned or
+  duplicated line. If your reply would be nearly identical to something you already said, change it.
+
+Always end with a JSON block (fill "thinking" FIRST, then the rest):
 {{
+  "thinking": "private reasoning — never shown to the customer",
   "action": "collect" | "confirm" | "place" | "send_price_list" | "handoff" | "invalid",
   "line_items": [{{"product": "...", "spec": "...", "quantity_kits": 0, "unit_price": 0}}],
   "shipping": "standard" | "expedited" | null,
@@ -248,6 +266,27 @@ Always end with a JSON block:
 twilio_client = TwilioClient(settings.twilio_account_sid, settings.twilio_auth_token)
 
 # ── Conversation state ─────────────────────────────────────────────────────────
+# Per-phone lock so two messages arriving in quick succession from the same number
+# are processed one at a time (otherwise both can see an empty history and the agent
+# greets twice). Plus the last outbound text per phone, to suppress duplicate replies.
+import threading as _threading
+_phone_locks: dict[str, _threading.Lock] = {}
+_phone_locks_guard = _threading.Lock()
+_last_outbound: dict[str, str] = {}
+
+
+def _lock_for(phone: str) -> _threading.Lock:
+    with _phone_locks_guard:
+        lk = _phone_locks.get(phone)
+        if lk is None:
+            lk = _phone_locks[phone] = _threading.Lock()
+        return lk
+
+
+def _norm(t: str) -> str:
+    return " ".join((t or "").lower().split())
+
+
 _conversations: dict[str, list[dict]] = {}
 _lead_stage: dict[str, str] = {}  # phone -> "qualifying"|"ordering"|"manual"|"awaiting_payment"|"awaiting_address"
 
@@ -568,6 +607,7 @@ def handle_inbound(from_phone: str, body: str, name: str = "") -> str:
         _lead_stage.pop(from_phone, None)
         _pending_handoffs.pop(from_phone, None)
         _pending_payments.pop(from_phone, None)
+        _last_outbound.pop(from_phone, None)
         try:
             existing = airtable.find_lead_by_phone(from_phone)
             if existing:
@@ -678,8 +718,8 @@ def handle_inbound(from_phone: str, body: str, name: str = "") -> str:
         # If this is the very first thing they said, pair the sheet with a warm
         # greeting so they aren't met with a silent file. Otherwise sheet only.
         if first_contact:
-            return ("Hello dear! 😊 I am a service agent for Northline Group. Here is our full "
-                    "price list. Tell me which product you need, dear, and how many.")
+            return ("Hello dear! This is Lily from Northline Group 😊 Here is our full price "
+                    "list. Tell me which product you need, dear, and how many.")
         return ""  # empty reply → spreadsheet only, no text
 
     # Otherwise Claude decides whether to send the full price list (via the
@@ -948,7 +988,16 @@ def twilio_webhook_handler(form_data: dict) -> str:
     if body:
         airtable.log_message(from_phone, "inbound", body)
 
-    reply = handle_inbound(from_phone, body, name=profile_name)
+    # Serialize per-phone so rapid back-to-back messages don't both greet.
+    with _lock_for(from_phone):
+        reply = handle_inbound(from_phone, body, name=profile_name)
+        # Suppress a reply identical to the last one we just sent this number
+        # (belt-and-suspenders against duplicate/robotic responses).
+        if reply and _norm(reply) == _last_outbound.get(from_phone):
+            print(f"[MessagingAgent] Suppressed duplicate reply to {from_phone}")
+            reply = ""
+        if reply:
+            _last_outbound[from_phone] = _norm(reply)
 
     if reply:
         airtable.log_message(from_phone, "outbound", reply)
