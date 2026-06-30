@@ -213,11 +213,13 @@ class AirtableClient:
         return self.orders.all(formula="AND({payment_status}='paid',NOT({tracking_sent}))")
 
     def set_order_tracking(self, order_id: str, tracking_number: str) -> dict:
-        """Record a tracking number and mark the order as tracked (notified)."""
+        """Record a tracking number and mark the order shipped/tracked.
+        NOTE: fulfillment_status is a single-select — 'shipped' is an existing option
+        (Airtable rejects the whole update if you pass an unknown option value)."""
         return self.orders.update(order_id, {
             "tracking_number": tracking_number.strip(),
             "tracking_sent": True,
-            "fulfillment_status": "tracking_sent",
+            "fulfillment_status": "shipped",
         })
 
     def get_lead_phone_for_order(self, order_record: dict) -> str:
