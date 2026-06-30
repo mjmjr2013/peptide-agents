@@ -128,6 +128,9 @@ SHIPPING (tell them when they ask, or when confirming an order):
 - Expedited shipping: $235 flat, 10 days or less.
 - Shipping fee is ADDED on top of the product total. Always state shipping fee
   and the final total (product + shipping) when confirming the order.
+- TRACKING: tell the customer they will receive their tracking number within 1-3 days
+  from the date the order is placed. Mention this warmly when confirming the order or
+  after they pay, e.g. "You get your tracking number within 1-3 days, dear."
 
 PAYMENT:
 - We accept both BTC and USDT. Frame it warmly and positively — e.g. "We accept both BTC and
@@ -722,6 +725,7 @@ def handle_inbound(from_phone: str, body: str, name: str = "") -> str:
         set_stage(from_phone, "ordering")
         who = addr.get("ship_name") or "you"
         reply = (f"All set, dear! 🙏 Your order is confirmed and will ship to {who}. "
+                 f"You will receive your tracking number within 1-3 days from today. "
                  f"Thank you so much — message me anytime if you need anything else!")
         conversation.append({"role": "assistant", "content": reply})
         save_conversation(from_phone, conversation)
