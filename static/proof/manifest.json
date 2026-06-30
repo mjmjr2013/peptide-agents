@@ -1,5 +1,23 @@
 [
   {
+    "key": "lab_paper",
+    "file": "lab_paper.mp4",
+    "type": "video",
+    "description": "Short video inside our lab showing today's handwritten paper that says 'Northline Group' (北线集团). The single strongest proof we are a real, currently-operating lab — it shows a live, dated sign. Send when a prospect doubts we are a real lab, thinks it is a scam, or asks for live/current proof we exist."
+  },
+  {
+    "key": "vials",
+    "file": "vials.mp4",
+    "type": "video",
+    "description": "Close-up video panning over trays of finished peptide vials. Best when a prospect wants to SEE the actual product or asks whether we really have the goods in stock."
+  },
+  {
+    "key": "lab_equipment",
+    "file": "lab_equipment.mp4",
+    "type": "video",
+    "description": "Video of our lab/manufacturing equipment. Good extra proof we make the product in-house. Send if a prospect asks about our facility, how we make it, or whether we are really the manufacturer."
+  },
+  {
     "key": "warehouse_boxes",
     "file": "warehouse_boxes.jpeg",
     "type": "image",
