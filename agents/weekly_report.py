@@ -147,9 +147,9 @@ def run_daily_manifest() -> dict:
         return {"pending": 0, "sent": False}
     from agents.messaging_agent import _BASE_URL
     link = f"{_BASE_URL}/manifest?token={settings.manifest_token}"
-    body = (f"📦 Good day, dear! You have *{n}* order(s) ready to ship. Please open the "
-            f"sheet and enter the tracking number for each one — it goes straight to the "
-            f"customer:\n{link}")
+    plural = "order" if n == 1 else "orders"
+    body = (f"Northline: {n} {plural} ready to ship. Open the tracking sheet and enter a "
+            f"tracking number for each:\n{link}")
     sent = _send_whatsapp([body])
     return {"pending": n, "sent": sent}
 

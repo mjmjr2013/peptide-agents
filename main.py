@@ -242,6 +242,7 @@ def start_webhook_server(port: int = 5000):
 <title>Northline — Shipping Tracking</title>
 <style>
   body{{font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#f2f3f5;margin:0;padding:16px;color:#1c1c1e}}
+  .wrap{{max-width:640px;margin:0 auto}}
   h1{{font-size:20px;margin:4px 0 2px}} .sub{{color:#666;font-size:13px;margin-bottom:14px}}
   .card{{background:#fff;border-radius:14px;padding:14px 16px;margin-bottom:14px;box-shadow:0 1px 3px rgba(0,0,0,.08)}}
   .ref{{font-weight:700;font-size:16px}} .name{{font-weight:600;margin-top:2px}}
@@ -252,9 +253,11 @@ def start_webhook_server(port: int = 5000):
   .ok{{background:#e7f8ec;color:#16692e;border-radius:10px;padding:12px;margin-bottom:14px;font-weight:600}}
   .empty{{background:#fff;border-radius:14px;padding:28px 16px;text-align:center;color:#555}}
 </style></head><body>
+<div class="wrap">
 <h1>📦 Shipping Tracking</h1>
 <div class="sub">Enter the tracking number for each order. It is sent to the customer right away.</div>
 {banner}{body}
+</div>
 </body></html>"""
             return html
 
