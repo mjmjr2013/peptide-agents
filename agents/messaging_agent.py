@@ -20,6 +20,7 @@ from core.pricing import (
     max_discount_for_qty, HANDOFF_KITS, MARKUP_START, MARKUP_FLOOR,
 )
 from core.price_image import get_sku
+from core.proof_media import get_media_catalog_text
 from core import crypto_verify
 from config import settings
 
@@ -80,6 +81,19 @@ Reply with ONLY the message text to send the customer — no quotes, no JSON, no
 
 def _build_order_prompt() -> str:
     catalog = get_catalog_text()
+    media_catalog = get_media_catalog_text()
+    proof_section = (
+        "PROOF / LEGITIMACY MEDIA — you can send real photos/videos of our lab and product:\n"
+        "- When a prospect asks for proof we are legit / a real lab, asks to SEE the product, the\n"
+        "  lab, the vials, or wants pictures/video before they trust us, you may send one of the\n"
+        "  assets below. Use action \"send_media\" with \"media_key\" set to the BEST-FITTING asset\n"
+        "  for what they asked. Use your judgement — match the asset's description to their request\n"
+        "  (e.g. they doubt we are a real lab → a lab video; they want to see the product → a vial\n"
+        "  photo). Put a short warm caption in reply_message (it is sent WITH the media).\n"
+        "- Send at most ONE asset per request. Do not spam media. If nothing fits well, just answer\n"
+        "  warmly in words instead.\n"
+        "Available assets (media_key — description):\n" + media_catalog + "\n\n"
+    ) if media_catalog else ""
     return f"""You are a sales representative for Northline Group, a research peptide LAB in China.
 We are the lab — the manufacturer. We make and ship the product ourselves, direct from China.
 
@@ -227,7 +241,7 @@ BIG MULTI-PRODUCT ORDERS — never drop items:
   reply_message list match the line_items exactly. The list in your message and the JSON must
   agree and include everything.
 
-SENDING THE FULL PRICE LIST:
+{proof_section}SENDING THE FULL PRICE LIST:
 We have a complete bilingual price list spreadsheet that can be sent as a file attachment.
 
 Use action "send_price_list" whenever the buyer wants pricing in general / the whole catalog
@@ -296,10 +310,11 @@ THINK BEFORE YOU REPLY:
 Always end with a JSON block (fill "thinking" FIRST, then the rest):
 {{
   "thinking": "private reasoning — never shown to the customer",
-  "action": "collect" | "confirm" | "place" | "send_price_list" | "handoff" | "invalid",
+  "action": "collect" | "confirm" | "place" | "send_price_list" | "send_media" | "handoff" | "invalid",
   "line_items": [{{"product": "...", "spec": "...", "quantity_kits": 0, "unit_price": 0}}],
   "shipping": "standard" | "expedited" | null,
   "coin": "USDT" | "BTC" | null,
+  "media_key": "... (only for action send_media: the key of the asset to send)",
   "reply_message": "...",
   "notes": "..."
 }}"""
@@ -840,6 +855,17 @@ def _handle_ordering(phone: str, conversation: list[dict], existing_lead: dict |
             print(f"[MessagingAgent] _send_price_list crashed: {e!r}")
         return ""
 
+    # Proof/legitimacy media requested — send the chosen lab video or photo. The
+    # caption (reply_message) rides along with the media, so return "" after.
+    if action == "send_media":
+        sent = _send_proof_media(phone, action_data.get("media_key", ""), caption=reply)
+        if not sent:
+            # No matching asset (or send failed) — fall back to a warm text reply so
+            # the prospect isn't left hanging.
+            return reply or ("Of course, dear — we are a real lab in China. Let me get "
+                             "something to show you, one moment 😊")
+        return ""
+
     # Large-order escalation → operator-controlled relay
     if action == "handoff":
         li = line_items[0] if line_items else {}
@@ -1001,6 +1027,28 @@ def _send_price_list(to: str) -> None:
     except Exception as e:
         print(f"[PriceList] XLSX send failed: {e!r} — sending text fallback")
         _send_text_price_list(from_number, to)
+
+
+def _send_proof_media(to: str, key: str, caption: str = "") -> bool:
+    """Send a proof/legitimacy asset (lab video or product photo) to a prospect as
+    a WhatsApp media attachment. Returns True if a media message was sent."""
+    from core.proof_media import get_media_by_key, PROOF_DIR
+    entry = get_media_by_key(key)
+    if not entry:
+        print(f"[Proof] No proof asset for key {key!r} — skipping")
+        return False
+    from_number = settings.twilio_whatsapp_from if "whatsapp" in to else settings.twilio_phone_number
+    url = f"{_BASE_URL}/proof/{_urlquote(entry['file'])}"
+    try:
+        msg = twilio_client.messages.create(
+            from_=from_number, to=to, media_url=[url],
+            body=(caption or None),
+        )
+        print(f"[Proof] Sent {key!r} ({entry['file']}) to {to}: SID={msg.sid}")
+        return True
+    except Exception as e:
+        print(f"[Proof] Send of {key!r} failed: {e!r}")
+        return False
 
 
 def _send_text_price_list(from_number: str, to: str) -> None:

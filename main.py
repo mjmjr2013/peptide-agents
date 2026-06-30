@@ -169,6 +169,18 @@ def start_webhook_server(port: int = 5000):
                              as_attachment=False,
                              download_name="Northline_Price_List.pdf")
 
+        @app.route("/proof/<path:filename>")
+        def proof_media(filename):
+            """Serve a proof/legitimacy asset (lab video or product photo) so it can
+            be sent to a prospect as a WhatsApp media attachment. Only serves files
+            that are listed in the proof manifest — never arbitrary paths."""
+            from flask import send_file, abort
+            from core.proof_media import PROOF_DIR, load_manifest
+            allowed = {e["file"] for e in load_manifest()}
+            if filename not in allowed:
+                abort(404)
+            return send_file(str(PROOF_DIR / filename))
+
         @app.route("/health")
         def health():
             return {"status": "ok"}, 200
