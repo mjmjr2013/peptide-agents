@@ -1071,6 +1071,26 @@ def send_sms(to: str, body: str):
     return msg.sid
 
 
+def send_tracking_to_customer(phone: str, tracking: str, name: str = "") -> bool:
+    """Text a customer their shipping tracking number in Lily's voice (WhatsApp).
+    Returns True if sent. Best-effort — logs and returns False on failure."""
+    if not phone or not tracking:
+        return False
+    from_number = settings.twilio_whatsapp_from if "whatsapp" in phone else settings.twilio_phone_number
+    dear = f"{name}, " if name else ""
+    body = (f"Wonderful news, {dear}dear! 🎉 Your order has shipped. Your tracking number is "
+            f"*{tracking.strip()}*. It may take a little time to show movement. Thank you so much "
+            f"for your order, dear — message me anytime if you need anything! 😊")
+    try:
+        msg = twilio_client.messages.create(body=body, from_=from_number, to=phone)
+        airtable.log_message(phone, "outbound", body)  # transcript
+        print(f"[Tracking] Sent tracking to {phone}: SID={msg.sid}")
+        return True
+    except Exception as e:
+        print(f"[Tracking] Send to {phone} failed: {e!r}")
+        return False
+
+
 def twilio_webhook_handler(form_data: dict) -> str:
     from_phone = form_data.get("From", "")
     body = form_data.get("Body", "").strip()

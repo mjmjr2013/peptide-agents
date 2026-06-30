@@ -136,17 +136,22 @@ def _send_whatsapp(chunks: list[str]) -> bool:
 
 
 def run_daily_manifest() -> dict:
-    """DAILY: warehouse manifest for all paid orders not yet manifested. Sent via WhatsApp."""
-    orders = airtable.get_unmanifested_paid_orders()
-    if not orders:
-        print("[reports] daily manifest: no new paid orders")
-        return {"manifest_orders": 0, "sent": False}
-    day = datetime.now().strftime("%Y-%m-%d")
-    chunks = build_warehouse_whatsapp(orders, day)
-    sent = _send_whatsapp(chunks)
-    if sent:
-        airtable.mark_manifested([o["id"] for o in orders])
-    return {"manifest_orders": len(orders), "sent": sent}
+    """DAILY: ping the warehouse rep over WhatsApp with a link to the tracking page
+    (a phone-friendly sheet showing every paid order still needing a tracking number).
+    The rep enters tracking on the page; it writes to Airtable and texts the customer.
+    """
+    orders = airtable.get_orders_needing_tracking()
+    n = len(orders)
+    if n == 0:
+        print("[reports] daily manifest: no orders need tracking")
+        return {"pending": 0, "sent": False}
+    from agents.messaging_agent import _BASE_URL
+    link = f"{_BASE_URL}/manifest?token={settings.manifest_token}"
+    body = (f"📦 Good day, dear! You have *{n}* order(s) ready to ship. Please open the "
+            f"sheet and enter the tracking number for each one — it goes straight to the "
+            f"customer:\n{link}")
+    sent = _send_whatsapp([body])
+    return {"pending": n, "sent": sent}
 
 
 def run_supplier_bulk() -> dict:

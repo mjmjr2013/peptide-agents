@@ -208,6 +208,28 @@ class AirtableClient:
         """Paid orders not yet sent to the warehouse on a manifest (daily cadence)."""
         return self.orders.all(formula="AND({payment_status}='paid',NOT({manifested}))")
 
+    def get_orders_needing_tracking(self) -> list[dict]:
+        """Paid orders the warehouse still has to enter a tracking number for."""
+        return self.orders.all(formula="AND({payment_status}='paid',NOT({tracking_sent}))")
+
+    def set_order_tracking(self, order_id: str, tracking_number: str) -> dict:
+        """Record a tracking number and mark the order as tracked (notified)."""
+        return self.orders.update(order_id, {
+            "tracking_number": tracking_number.strip(),
+            "tracking_sent": True,
+            "fulfillment_status": "tracking_sent",
+        })
+
+    def get_lead_phone_for_order(self, order_record: dict) -> str:
+        """The customer's WhatsApp/phone (from the linked Lead) to send tracking to."""
+        ids = order_record["fields"].get("lead_id", [])
+        if not ids:
+            return ""
+        try:
+            return (self.get_lead(ids[0])["fields"].get("phone") or "").strip()
+        except Exception:
+            return ""
+
     def mark_bulk_ordered(self, order_ids: list[str]) -> None:
         for oid in order_ids:
             try:

@@ -44,6 +44,11 @@ class Settings:
     # Use the whatsapp: scheme, e.g. "whatsapp:+8613418806654".
     warehouse_whatsapp: str = os.environ.get("WAREHOUSE_WHATSAPP", "")
 
+    # Secret token guarding the warehouse tracking page (/manifest?token=...). The
+    # daily WhatsApp ping to the warehouse rep includes this link; only this token
+    # can view the page or submit tracking numbers.
+    manifest_token: str = os.environ.get("MANIFEST_TOKEN", "")
+
     # Crypto receiving addresses (public). Payments are verified read-only on-chain.
     # USDT is accepted on Ethereum (ERC-20) — your Phantom ETH address receives it.
     eth_address: str = os.environ.get("ETH_ADDRESS", "")

@@ -181,6 +181,108 @@ def start_webhook_server(port: int = 5000):
                 abort(404)
             return send_file(str(PROOF_DIR / filename))
 
+        # ── Warehouse tracking page ──────────────────────────────────────────
+        # A phone-friendly page the warehouse rep opens from a WhatsApp link. Shows
+        # today's paid orders (read-only) with ONE editable field each: tracking #.
+        # On save, the tracking number is written to Airtable and texted to the
+        # customer automatically. Guarded by MANIFEST_TOKEN.
+        def _manifest_authorized(req):
+            from config import settings
+            tok = req.values.get("token", "")
+            return bool(settings.manifest_token) and tok == settings.manifest_token
+
+        @app.route("/manifest")
+        def manifest_page():
+            from flask import request, abort
+            from html import escape
+            from config import settings
+            from core.airtable_client import airtable
+            if not _manifest_authorized(request):
+                abort(403)
+            token = escape(settings.manifest_token)
+            saved = request.args.get("saved", "")
+            try:
+                orders = airtable.get_orders_needing_tracking()
+            except Exception as e:
+                print(f"[Manifest] load failed: {e!r}")
+                orders = []
+            orders.sort(key=lambda o: o["fields"].get("order_ref", ""))
+
+            banner = (f'<div class="ok">✓ Tracking saved and sent to the customer'
+                      f'{(" for " + escape(saved)) if saved else ""}.</div>') if saved else ""
+            cards = []
+            for o in orders:
+                f = o["fields"]
+                items = "<br>".join(
+                    escape(f"{int(it['fields'].get('kits') or 0)}x {it['fields'].get('product','')} "
+                           f"{it['fields'].get('spec','')}".strip())
+                    for it in airtable.get_items_for_order(o)) or "—"
+                addr = "<br>".join(escape(x) for x in [
+                    f.get("address_line1"), f.get("address_line2"),
+                    " ".join(y for y in [f.get("city"), f.get("state_province"), f.get("postal_code")] if y),
+                    f.get("country")] if x)
+                ref = escape(f.get("order_ref", "") or o["id"])
+                cards.append(f"""
+                <div class="card">
+                  <div class="ref">{ref}</div>
+                  <div class="name">{escape(f.get('ship_name',''))}</div>
+                  <div class="addr">{addr}</div>
+                  <div class="items"><b>Items:</b><br>{items}</div>
+                  <form method="POST" action="/manifest/save">
+                    <input type="hidden" name="token" value="{token}">
+                    <input type="hidden" name="order_id" value="{escape(o['id'])}">
+                    <input class="trk" name="tracking" inputmode="latin" autocapitalize="characters"
+                           placeholder="Enter tracking number" required>
+                    <button type="submit">Save &amp; send to customer</button>
+                  </form>
+                </div>""")
+            body = "".join(cards) if cards else '<div class="empty">🎉 All caught up — no orders waiting for tracking.</div>'
+            html = f"""<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Northline — Shipping Tracking</title>
+<style>
+  body{{font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#f2f3f5;margin:0;padding:16px;color:#1c1c1e}}
+  h1{{font-size:20px;margin:4px 0 2px}} .sub{{color:#666;font-size:13px;margin-bottom:14px}}
+  .card{{background:#fff;border-radius:14px;padding:14px 16px;margin-bottom:14px;box-shadow:0 1px 3px rgba(0,0,0,.08)}}
+  .ref{{font-weight:700;font-size:16px}} .name{{font-weight:600;margin-top:2px}}
+  .addr{{color:#444;font-size:14px;margin:6px 0}} .items{{font-size:14px;margin:8px 0 12px;color:#333}}
+  .trk{{width:100%;box-sizing:border-box;font-size:17px;padding:12px;border:1px solid #ccc;border-radius:10px;margin-bottom:10px}}
+  button{{width:100%;font-size:16px;font-weight:600;padding:13px;border:0;border-radius:10px;background:#0a84ff;color:#fff}}
+  button:active{{background:#0768cc}}
+  .ok{{background:#e7f8ec;color:#16692e;border-radius:10px;padding:12px;margin-bottom:14px;font-weight:600}}
+  .empty{{background:#fff;border-radius:14px;padding:28px 16px;text-align:center;color:#555}}
+</style></head><body>
+<h1>📦 Shipping Tracking</h1>
+<div class="sub">Enter the tracking number for each order. It is sent to the customer right away.</div>
+{banner}{body}
+</body></html>"""
+            return html
+
+        @app.route("/manifest/save", methods=["POST"])
+        def manifest_save():
+            from flask import request, redirect, abort
+            from urllib.parse import quote
+            from config import settings
+            from core.airtable_client import airtable
+            from agents.messaging_agent import send_tracking_to_customer
+            if not _manifest_authorized(request):
+                abort(403)
+            order_id = request.form.get("order_id", "")
+            tracking = (request.form.get("tracking", "") or "").strip()
+            if not order_id or not tracking:
+                return redirect(f"/manifest?token={quote(settings.manifest_token)}")
+            try:
+                order = airtable.get_order(order_id)
+                airtable.set_order_tracking(order_id, tracking)
+                phone = airtable.get_lead_phone_for_order(order)
+                name = order["fields"].get("ship_name", "")
+                send_tracking_to_customer(phone, tracking, name)
+                ref = order["fields"].get("order_ref", "")
+            except Exception as e:
+                print(f"[Manifest] save failed for {order_id}: {e!r}")
+                ref = ""
+            return redirect(f"/manifest?token={quote(settings.manifest_token)}&saved={quote(ref)}")
+
         @app.route("/health")
         def health():
             return {"status": "ok"}, 200
