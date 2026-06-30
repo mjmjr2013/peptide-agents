@@ -92,6 +92,9 @@ def _build_order_prompt() -> str:
         "  photo). Put a short warm caption in reply_message (it is sent WITH the media).\n"
         "- Send at most ONE asset per request. Do not spam media. If nothing fits well, just answer\n"
         "  warmly in words instead.\n"
+        "- Send each asset only ONCE per conversation. If the history shows you already sent a proof\n"
+        "  clip/photo (a line like '[sent proof video/photo: ...]'), do NOT send it again — just\n"
+        "  reply in words. Never send the same video twice.\n"
         "Available assets (media_key — description):\n" + media_catalog + "\n\n"
     ) if media_catalog else ""
     return f"""You are a sales representative for Northline Group, a research peptide LAB in China.
@@ -329,6 +332,12 @@ import threading as _threading
 _phone_locks: dict[str, _threading.Lock] = {}
 _phone_locks_guard = _threading.Lock()
 _last_outbound: dict[str, str] = {}
+# Proof assets already sent to each prospect (phone -> set of media keys), so the
+# agent never re-sends the same lab video/photo on later turns. Cleared on RESET.
+_sent_media: dict[str, set] = {}
+# Sentinel returned by _handle_ordering when it already sent media + recorded the
+# turn in history itself — tells the caller not to append/send another message.
+_MEDIA_SENT = "\x00__media_sent__"
 
 
 def _lock_for(phone: str) -> _threading.Lock:
@@ -664,6 +673,7 @@ def handle_inbound(from_phone: str, body: str, name: str = "") -> str:
         _pending_handoffs.pop(from_phone, None)
         _pending_payments.pop(from_phone, None)
         _last_outbound.pop(from_phone, None)
+        _sent_media.pop(from_phone, None)
         try:
             existing = airtable.find_lead_by_phone(from_phone)
             if existing:
@@ -783,6 +793,10 @@ def handle_inbound(from_phone: str, body: str, name: str = "") -> str:
     # "send_price_list" action) or quote a specific product inline.
     reply = _handle_ordering(from_phone, conversation, existing_lead)
 
+    # _handle_ordering already recorded its turn (proof media sent) — send nothing more.
+    if reply == _MEDIA_SENT:
+        return ""
+
     conversation.append({"role": "assistant", "content": reply})
     save_conversation(from_phone, conversation)
     return reply
@@ -855,16 +869,25 @@ def _handle_ordering(phone: str, conversation: list[dict], existing_lead: dict |
             print(f"[MessagingAgent] _send_price_list crashed: {e!r}")
         return ""
 
-    # Proof/legitimacy media requested — send the chosen lab video or photo. The
-    # caption (reply_message) rides along with the media, so return "" after.
+    # Proof/legitimacy media requested — send the chosen lab video or photo ONCE.
     if action == "send_media":
-        sent = _send_proof_media(phone, action_data.get("media_key", ""), caption=reply)
+        key = (action_data.get("media_key", "") or "").strip()
+        already = _sent_media.get(phone, set())
+        # Never re-send an asset this prospect already got, and don't flood with more
+        # than 2 proof clips in one conversation — answer in words instead. (Returning
+        # a normal text reply; the caller appends + sends it.)
+        if key in already or len(already) >= 2:
+            return reply or "I already shared that with you, dear 😊 What would you like to order?"
+        sent = _send_proof_media(phone, key, caption=reply)
         if not sent:
-            # No matching asset (or send failed) — fall back to a warm text reply so
-            # the prospect isn't left hanging.
             return reply or ("Of course, dear — we are a real lab in China. Let me get "
                              "something to show you, one moment 😊")
-        return ""
+        _sent_media.setdefault(phone, set()).add(key)
+        # Record the send in history so the model knows it already sent this (prevents
+        # the re-send loop), then signal the caller to NOT append again.
+        conversation.append({"role": "assistant", "content": f"[sent proof video/photo: {key}]"})
+        save_conversation(phone, conversation)
+        return _MEDIA_SENT
 
     # Large-order escalation → operator-controlled relay
     if action == "handoff":
