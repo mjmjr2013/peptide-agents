@@ -151,6 +151,8 @@ def run_daily_manifest() -> dict:
     body = (f"Northline: {n} {plural} ready to ship. Open the tracking sheet and enter a "
             f"tracking number for each:\n{link}")
     sent = _send_whatsapp([body])
+    if sent and settings.warehouse_whatsapp:
+        airtable.log_message(settings.warehouse_whatsapp, "outbound", body)  # visible in transcript
     return {"pending": n, "sent": sent}
 
 

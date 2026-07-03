@@ -724,8 +724,33 @@ def handle_inbound(from_phone: str, body: str, name: str = "") -> str:
                          "shipping details so we can deliver: full name, street address, city, "
                          "state/province, postal code, and country.")
             else:
-                reply = ("I don't see the payment yet, dear — it can take a minute or two to "
-                         "confirm on the blockchain. Message me once it's sent and I'll check again. 😊")
+                # Reassure and VARY the message across pings so a waiting customer always
+                # gets a fresh, human answer (never silence). BTC needs a confirmation,
+                # which can take longer than USDT — set that expectation.
+                pend["checks"] = pend.get("checks", 0) + 1
+                is_btc = pend["coin"].upper() == "BTC"
+                if is_btc:
+                    waits = [
+                        "Thank you dear! 🙏 I'm watching the blockchain for it now. BTC usually needs "
+                        "one confirmation, so it can take 10–30 minutes to show up — I have not lost you, "
+                        "I promise. I will message you the second I see it. 😊",
+                        "Still watching for it, dear — BTC can take a little while to confirm on the "
+                        "network. Please don't worry, your order NL is safe and I am right here. I will "
+                        "tell you the moment it lands. 🙏",
+                        "I appreciate your patience, dear 💛 The Bitcoin network is still confirming — "
+                        "nothing is wrong, this is normal for BTC. I am checking again and will confirm "
+                        "as soon as it clears.",
+                    ]
+                else:
+                    waits = [
+                        "Thank you dear! 🙏 I'm checking the blockchain now — it can take a minute or two "
+                        "to confirm. I'm right here and will message you the second it shows. 😊",
+                        "Still just confirming, dear — I have not gone anywhere. I will tell you the "
+                        "moment I see your payment land. 🙏",
+                        "Almost there, dear 💛 The network is confirming your payment. I am watching it "
+                        "and will confirm as soon as it clears.",
+                    ]
+                reply = waits[(pend["checks"] - 1) % len(waits)]
             conversation.append({"role": "assistant", "content": reply})
             save_conversation(from_phone, conversation)
             return reply
@@ -1067,6 +1092,7 @@ def _send_proof_media(to: str, key: str, caption: str = "") -> bool:
             from_=from_number, to=to, media_url=[url],
             body=(caption or None),
         )
+        airtable.log_message(to, "outbound", f"📎 [sent proof {entry['type']}: {key}] {caption}".strip())
         print(f"[Proof] Sent {key!r} ({entry['file']}) to {to}: SID={msg.sid}")
         return True
     except Exception as e:
@@ -1123,16 +1149,13 @@ def twilio_webhook_handler(form_data: dict) -> str:
     if body:
         airtable.log_message(from_phone, "inbound", body)
 
-    # Serialize per-phone so rapid back-to-back messages don't both greet.
+    # Serialize per-phone so rapid back-to-back messages are handled one at a time
+    # (this alone prevents the double-greet race). We intentionally do NOT suppress
+    # "duplicate" replies here: a customer waiting on payment may ping several times,
+    # and each ping MUST get an answer — silencing repeats made the agent look like it
+    # ghosted (and, to a paying customer, like a scam).
     with _lock_for(from_phone):
         reply = handle_inbound(from_phone, body, name=profile_name)
-        # Suppress a reply identical to the last one we just sent this number
-        # (belt-and-suspenders against duplicate/robotic responses).
-        if reply and _norm(reply) == _last_outbound.get(from_phone):
-            print(f"[MessagingAgent] Suppressed duplicate reply to {from_phone}")
-            reply = ""
-        if reply:
-            _last_outbound[from_phone] = _norm(reply)
 
     if reply:
         airtable.log_message(from_phone, "outbound", reply)
