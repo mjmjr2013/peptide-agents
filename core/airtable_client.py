@@ -197,6 +197,17 @@ class AirtableClient:
     def get_awaiting_orders(self) -> list[dict]:
         return self.orders.all(formula="{payment_status}='awaiting'")
 
+    def get_awaiting_order_for_phone(self, phone: str) -> dict | None:
+        """The (most recent) awaiting-payment order for the customer at this phone.
+        Used to rebuild in-flight payment state after a redeploy wipes memory."""
+        lead = self.find_lead_by_phone(phone)
+        if not lead:
+            return None
+        lid = lead["id"]
+        matches = [o for o in self.get_awaiting_orders() if lid in (o["fields"].get("lead_id") or [])]
+        matches.sort(key=lambda o: o["fields"].get("created_at", ""), reverse=True)
+        return matches[0] if matches else None
+
     def get_paid_orders_for_week(self, week: str) -> list[dict]:
         return self.orders.all(formula=f"AND({{payment_status}}='paid',{{week_tag}}='{week}')")
 

@@ -694,6 +694,29 @@ def handle_inbound(from_phone: str, body: str, name: str = "") -> str:
     stage = get_stage(from_phone)
     first_contact = len(conversation) == 0  # nothing said yet → greet warmly
 
+    # Recover in-flight payment state after a redeploy. In-memory _pending_payments /
+    # stage are volatile — a deploy wipes them and would otherwise STRAND a customer
+    # who already paid (their pings would be treated as a new chat, order never
+    # verified). If Airtable still shows an awaiting order for this phone, re-enter
+    # awaiting_payment so their payment is verified normally.
+    if stage not in ("awaiting_payment", "awaiting_address", "manual") and from_phone not in _pending_payments:
+        try:
+            _ao = airtable.get_awaiting_order_for_phone(from_phone)
+        except Exception as e:
+            _ao = None
+            print(f"[MessagingAgent] awaiting-order recovery lookup failed: {e!r}")
+        if _ao:
+            f = _ao["fields"]
+            _pending_payments[from_phone] = {
+                "order_id": _ao["id"], "coin": (f.get("coin") or "").upper(),
+                "expected": float(f.get("expected_amount") or 0),
+                "since": time.time() - 7 * 86400,  # wide window; matching is by amount
+                "charge_usd": float(f.get("total_price") or 0), "ref": f.get("order_ref", ""),
+            }
+            set_stage(from_phone, "awaiting_payment")
+            stage = "awaiting_payment"
+            print(f"[MessagingAgent] Recovered awaiting order {f.get('order_ref')} for {from_phone} from Airtable")
+
     # While a prospect is under operator control, do NOT let the auto-agent reply.
     # Capture their message, forward it to the operators, and stay silent — the
     # operator drives the conversation via relay.
