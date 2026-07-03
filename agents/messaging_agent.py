@@ -700,7 +700,63 @@ def handle_inbound(from_phone: str, body: str, name: str = "") -> str:
 
     conversation = get_conversation(from_phone)
     stage = get_stage(from_phone)
+
+    # ── Redeploy recovery: rebuild conversation memory from the Airtable transcript ──
+    # In-memory history is wiped by every deploy, but every message is logged to the
+    # Messages table. If we have no in-memory history for this phone, rebuild the last
+    # ~30 messages so Lily keeps full context mid-conversation (no amnesia, no
+    # re-greeting). Messages after the customer's last RESET only.
+    if not conversation:
+        try:
+            rows = airtable.get_recent_messages_for_phone(from_phone, limit=30)
+        except Exception as e:
+            rows = []
+            print(f"[MessagingAgent] transcript rebuild failed: {e!r}")
+        cut = 0
+        for i, r in enumerate(rows):
+            f = r["fields"]
+            if f.get("direction") == "inbound" and (f.get("body") or "").strip().upper() == "RESET":
+                cut = i + 1
+        rebuilt = []
+        for r in rows[cut:]:
+            f = r["fields"]
+            role = "user" if f.get("direction") == "inbound" else "assistant"
+            text = (f.get("body") or "").strip()
+            if not text:
+                continue
+            if rebuilt and rebuilt[-1]["role"] == role:  # API needs alternating roles
+                rebuilt[-1]["content"] += "\n" + text
+            else:
+                rebuilt.append({"role": role, "content": text})
+        if rebuilt and rebuilt[0]["role"] == "assistant":
+            rebuilt = rebuilt[1:]  # history must start with the customer
+        if rebuilt:
+            conversation = rebuilt
+            save_conversation(from_phone, conversation)
+            print(f"[MessagingAgent] Rebuilt {len(rebuilt)} messages for {from_phone} from transcript")
+
     first_contact = len(conversation) == 0  # nothing said yet → greet warmly
+
+    # ── Redeploy recovery: paid order waiting on a shipping address ──
+    # If a deploy landed between payment confirmation and address collection, the
+    # in-memory stage is lost; re-enter awaiting_address so their address is parsed
+    # into the order instead of being treated as ordinary chat.
+    if stage not in ("awaiting_payment", "awaiting_address", "manual") and from_phone not in _pending_payments:
+        try:
+            _po = airtable.get_paid_order_awaiting_address_for_phone(from_phone)
+        except Exception as e:
+            _po = None
+            print(f"[MessagingAgent] address-stage recovery lookup failed: {e!r}")
+        if _po:
+            _pending_payments[from_phone] = {
+                "order_id": _po["id"], "coin": (_po["fields"].get("coin") or "").upper(),
+                "expected": 0.0, "since": 0.0,
+                "charge_usd": float(_po["fields"].get("total_price") or 0),
+                "ref": _po["fields"].get("order_ref", ""),
+            }
+            set_stage(from_phone, "awaiting_address")
+            stage = "awaiting_address"
+            print(f"[MessagingAgent] Recovered awaiting-address order {_po['fields'].get('order_ref')} for {from_phone}")
 
     # Recover in-flight payment state after a redeploy. In-memory _pending_payments /
     # stage are volatile — a deploy wipes them and would otherwise STRAND a customer

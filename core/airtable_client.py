@@ -233,6 +233,29 @@ class AirtableClient:
             "fulfillment_status": "shipped",
         })
 
+    def get_recent_messages_for_phone(self, phone: str, limit: int = 30) -> list[dict]:
+        """Chronological transcript rows for one prospect (for conversation rebuild
+        after a redeploy). phone may include the whatsapp: prefix; rows store it bare."""
+        bare = (phone or "").replace("whatsapp:", "")
+        try:
+            rows = self.messages.all(formula=f"{{phone}}='{bare}'")
+        except Exception as e:
+            print(f"[airtable] transcript fetch failed for {bare}: {e}")
+            return []
+        rows.sort(key=lambda r: r["fields"].get("sent_at", ""))
+        return rows[-limit:]
+
+    def get_paid_order_awaiting_address_for_phone(self, phone: str) -> dict | None:
+        """A paid order for this customer that has no shipping address yet — means we
+        were mid address-collection when state was lost (redeploy recovery)."""
+        lead = self.find_lead_by_phone(phone)
+        if not lead:
+            return None
+        for o in self.orders.all(formula="AND({payment_status}='paid',{address_line1}='')"):
+            if lead["id"] in o["fields"].get("lead_id", []):
+                return o
+        return None
+
     def get_lead_phone_for_order(self, order_record: dict) -> str:
         """The customer's WhatsApp/phone (from the linked Lead) to send tracking to."""
         ids = order_record["fields"].get("lead_id", [])
