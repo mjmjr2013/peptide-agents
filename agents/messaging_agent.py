@@ -380,13 +380,19 @@ def _order_ref() -> str:
 
 
 def _payment_instructions(coin: str, expected: float, charge_usd: float, addr: str) -> str:
+    """Instructions text WITHOUT the address — the address is sent as its own separate
+    bare message right after (easy copy/paste; nothing else in that bubble)."""
     if coin == "USDT":
         return (f"Perfect, dear! 😊 Please send exactly *{expected:.2f} USDT* on the *Ethereum "
-                f"(ERC-20)* network to this address:\n\n{addr}\n\nPlease send the *exact* amount so I "
-                f"can match your payment. Message me once it's sent, dear, and I will confirm.")
-    return (f"Perfect, dear! 😊 Please send exactly *{expected:.8f} BTC* to this address:\n\n{addr}\n\n"
-            f"(That is about ${charge_usd:.2f} at today's rate.) Please send the exact amount and "
-            f"message me once it's sent, dear, and I will confirm.")
+                f"(ERC-20)* network. If you send from Coinbase or another exchange, choose "
+                f"*Ethereum* as the network (not Solana, Tron, or Base), dear. I will send the "
+                f"wallet address in the next message by itself so you can copy it easily. Please "
+                f"send the *exact* amount so I can match your payment, then message me and I "
+                f"will confirm.")
+    return (f"Perfect, dear! 😊 Please send exactly *{expected:.8f} BTC* (about ${charge_usd:.2f} "
+            f"at today's rate). I will send the wallet address in the next message by itself so "
+            f"you can copy it easily, dear. Please send the exact amount, then message me and I "
+            f"will confirm.")
 
 
 _ADDR_PROMPT = """Extract a shipping address from the customer's message. Return ONLY a JSON object:
@@ -728,52 +734,68 @@ def handle_inbound(from_phone: str, body: str, name: str = "") -> str:
         print(f"[MessagingAgent] Manual mode — forwarded prospect msg to operators")
         return ""  # operator will craft the reply
 
-    # ── Awaiting crypto payment: verify on-chain when the customer pings us ──
+    # ── Awaiting crypto payment: "finance department" verification flow ──────
+    # Per Daniel: on the customer's "I paid" ping, reply IMMEDIATELY with a human
+    # "let me verify with the finance department" beat, then verify on-chain in the
+    # background and send the result proactively ~30–60s later.
     if stage == "awaiting_payment":
         conversation.append({"role": "user", "content": body})
         pend = _pending_payments.get(from_phone)
         if not pend:
             set_stage(from_phone, "ordering")
-        else:
-            res = crypto_verify.verify_payment(pend["coin"], _wallet_address(pend["coin"]),
-                                               pend["expected"], pend["since"])
-            if res:
+        elif not pend.get("verifying"):
+            pend["verifying"] = True
+            save_conversation(from_phone, conversation)
+
+            def _verify_later(phone=from_phone, pend=pend):
+                time.sleep(40)  # the human "checking with finance" beat
                 try:
-                    airtable.mark_order_paid(pend["order_id"], res.get("tx_hash", ""), _now_iso())
+                    res = crypto_verify.verify_payment(pend["coin"], _wallet_address(pend["coin"]),
+                                                       pend["expected"], pend["since"])
+                    if res:
+                        try:
+                            airtable.mark_order_paid(pend["order_id"], res.get("tx_hash", ""), _now_iso())
+                        except Exception as e:
+                            print(f"[MessagingAgent] mark_paid failed: {e!r}")
+                        set_stage(phone, "awaiting_address")
+                        msg = ("Okay dear, finance has confirmed — payment received! 🎉 Thank you so "
+                               "much. Now please send your shipping details so we can deliver: full "
+                               "name, street address, city, state/province, postal code, and country.")
+                    else:
+                        is_btc = pend["coin"].upper() == "BTC"
+                        msg = (("Dear, finance doesn't see it on the network just yet — BTC usually "
+                                "needs one confirmation, which can take 10–30 minutes. Nothing is "
+                                "wrong; message me in a little while and I will check again. 🙏")
+                               if is_btc else
+                               ("Dear, finance doesn't see it just yet — it can take a few minutes to "
+                                "confirm. Message me shortly and I will check again. 🙏"))
+                    conv = get_conversation(phone)
+                    conv.append({"role": "assistant", "content": msg})
+                    save_conversation(phone, conv)
+                    _send_to_prospect(phone, msg)
                 except Exception as e:
-                    print(f"[MessagingAgent] mark_paid failed: {e!r}")
-                set_stage(from_phone, "awaiting_address")
-                reply = ("Payment received, dear! 🎉 Thank you so much. Now please send your "
-                         "shipping details so we can deliver: full name, street address, city, "
-                         "state/province, postal code, and country.")
-            else:
-                # Reassure and VARY the message across pings so a waiting customer always
-                # gets a fresh, human answer (never silence). BTC needs a confirmation,
-                # which can take longer than USDT — set that expectation.
-                pend["checks"] = pend.get("checks", 0) + 1
-                is_btc = pend["coin"].upper() == "BTC"
-                if is_btc:
-                    waits = [
-                        "Thank you dear! 🙏 I'm watching the blockchain for it now. BTC usually needs "
-                        "one confirmation, so it can take 10–30 minutes to show up — I have not lost you, "
-                        "I promise. I will message you the second I see it. 😊",
-                        "Still watching for it, dear — BTC can take a little while to confirm on the "
-                        "network. Please don't worry, your order NL is safe and I am right here. I will "
-                        "tell you the moment it lands. 🙏",
-                        "I appreciate your patience, dear 💛 The Bitcoin network is still confirming — "
-                        "nothing is wrong, this is normal for BTC. I am checking again and will confirm "
-                        "as soon as it clears.",
-                    ]
-                else:
-                    waits = [
-                        "Thank you dear! 🙏 I'm checking the blockchain now — it can take a minute or two "
-                        "to confirm. I'm right here and will message you the second it shows. 😊",
-                        "Still just confirming, dear — I have not gone anywhere. I will tell you the "
-                        "moment I see your payment land. 🙏",
-                        "Almost there, dear 💛 The network is confirming your payment. I am watching it "
-                        "and will confirm as soon as it clears.",
-                    ]
-                reply = waits[(pend["checks"] - 1) % len(waits)]
+                    print(f"[MessagingAgent] background verify failed: {e!r}")
+                finally:
+                    pend["verifying"] = False
+
+            import threading
+            threading.Thread(target=_verify_later, daemon=True).start()
+            reply = "Okay dear, wait one moment while I verify with the finance department 😊"
+            conversation.append({"role": "assistant", "content": reply})
+            save_conversation(from_phone, conversation)
+            return reply
+        else:
+            # A verification is already in flight — reassure with VARIED messages so
+            # repeated pings never get silence or a robotic repeat.
+            pend["checks"] = pend.get("checks", 0) + 1
+            waits = [
+                "One moment, dear — I am still with the finance department confirming it. I will "
+                "message you the second they finish. 😊",
+                "Still checking with finance, dear — I have not gone anywhere, I promise. 🙏",
+                "Almost done, dear 💛 Finance is just confirming it on the network. I will tell you "
+                "the moment it clears.",
+            ]
+            reply = waits[(pend["checks"] - 1) % len(waits)]
             conversation.append({"role": "assistant", "content": reply})
             save_conversation(from_phone, conversation)
             return reply
@@ -997,6 +1019,17 @@ def _handle_ordering(phone: str, conversation: list[dict], existing_lead: dict |
                                     "since": time.time() - 180, "charge_usd": charge_usd, "ref": ref}
         set_stage(phone, "awaiting_payment")
         print(f"[MessagingAgent] Pending order {ref} ({order['id']}) — ${charge_usd} {coin}")
+        # Send the wallet address as its OWN bare message (nothing else in the bubble)
+        # so the customer can long-press → copy cleanly. Delayed a beat so it arrives
+        # AFTER the instructions reply below.
+        def _send_bare_address():
+            time.sleep(2)
+            try:
+                _send_to_prospect(phone, addr)
+            except Exception as e:
+                print(f"[MessagingAgent] bare-address send failed: {e!r}")
+        import threading
+        threading.Thread(target=_send_bare_address, daemon=True).start()
         return _payment_instructions(coin, expected, charge_usd, addr)
 
     return reply
