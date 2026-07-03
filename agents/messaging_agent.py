@@ -387,12 +387,14 @@ def _payment_instructions(coin: str, expected: float, charge_usd: float, addr: s
                 f"(ERC-20)* network. If you send from Coinbase or another exchange, choose "
                 f"*Ethereum* as the network (not Solana, Tron, or Base), dear. I will send the "
                 f"wallet address in the next message by itself so you can copy it easily. Please "
-                f"send the *exact* amount so I can match your payment, then message me and I "
-                f"will confirm.")
+                f"send the *exact* amount so I can match your payment, and after you send it, "
+                f"please share a screenshot of the transaction with me, dear — then I will "
+                f"confirm with our finance department.")
     return (f"Perfect, dear! 😊 Please send exactly *{expected:.8f} BTC* (about ${charge_usd:.2f} "
             f"at today's rate). I will send the wallet address in the next message by itself so "
-            f"you can copy it easily, dear. Please send the exact amount, then message me and I "
-            f"will confirm.")
+            f"you can copy it easily, dear. Please send the exact amount, and after you send it, "
+            f"please share a screenshot of the transaction with me — then I will confirm with "
+            f"our finance department.")
 
 
 _ADDR_PROMPT = """Extract a shipping address from the customer's message. Return ONLY a JSON object:
