@@ -48,12 +48,17 @@ Every order is recorded at step 2 (awaiting); only **paid** orders flow into ful
 Conversation/stage state is in-memory (resets on redeploy). `RESET` from a contact clears their state.
 Large orders >100 kits below cap → operator relay (`OPERATOR_NUMBERS`, currently unset).
 
-**4a. Payment-state recovery after redeploy (IMPORTANT).** `_pending_payments` + stage are in-memory,
-so a redeploy used to STRAND a customer mid-payment (their "did you get it?" pings became a fresh chat;
-the order was never verified — this actually happened during the live BTC test). Fixed: on any inbound,
-if there's no in-memory pending payment but Airtable shows an **awaiting** order for that phone
-(`get_awaiting_order_for_phone`), the agent re-enters `awaiting_payment` (wide 7-day `since` window —
-matching is by unique amount) and verifies normally. Deploys are now safe mid-payment.
+**4a. Redeploy recovery — deploys are now invisible to prospects (IMPORTANT).** All live state
+(`_conversations`, `_lead_stage`, `_pending_payments`) is in-memory and wiped by every deploy. Three
+recovery layers rebuild it from Airtable on the prospect's next inbound:
+1. **Conversation memory**: rebuilt from the Messages transcript (last ~30 rows, cut at the customer's
+   last RESET; consecutive same-role rows merged so the API sees alternating turns). No amnesia, no
+   re-greeting mid-negotiation.
+2. **Awaiting payment**: if Airtable shows an *awaiting* order for the phone, re-enter
+   `awaiting_payment` (wide 7-day `since` window — matching is by unique amount) and verify normally.
+   (Originally added after a redeploy stranded the live BTC test mid-payment.)
+3. **Awaiting address**: if a *paid* order has no `address_line1`, re-enter `awaiting_address` so the
+   customer's address is parsed into the order instead of treated as chat.
 
 While waiting for confirmation, the agent replies with **varied, reassuring, coin-aware** messages
 (BTC sets a 10–30 min expectation; never the same line twice, never silence).
