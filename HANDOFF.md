@@ -6,7 +6,7 @@ how to deploy/debug, and what's outstanding. No secret tokens are stored here.
 
 Last updated after **going live** + transcript logging + persona/UX hardening + proof-media library:
 order-intake + crypto-payment + fulfillment-reports system is **deployed to prod** (commit
-`f8507ab0`, `/health` ok). All env vars set in Railway; base purged of test data. Remaining: run the
+`723da8c3`, `/health` ok). All env vars set in Railway; base purged of test data. Remaining: run the
 $2–3 live USDT end-to-end test (§14) and build the shipping-notification feature (§16, in design).
 See §9 (persona), §13/§14/§16/§17 (proof media).
 
@@ -78,11 +78,11 @@ Base `apprMJI8obXHOLvJU`. Tables: Leads, Campaigns, Labs, **Orders**, **Order It
 ## 7. Fulfillment reports (`agents/weekly_report.py`) + scheduler (`main.py`)
 Two independent cadences, two audiences, generated from paid orders; flag-based so each order is
 processed once per cadence:
-- **DAILY warehouse manifest** — `run_daily_manifest()`: paid orders where `manifested`=false → per-order
-  name+address+items (NO costs/supplier) → **WhatsApp** (Twilio) to `WAREHOUSE_WHATSAPP` as chunked
-  per-order text → set `manifested` **only on successful send**. Fires **daily at `DAILY_MANIFEST_HOUR`
-  (set to 0 = midnight Mountain)**. Purpose: warehouse makes labels + sends tracking fast.
-  Warehouse contact: `whatsapp:+8613418806654`.
+- **DAILY warehouse ping** — `run_daily_manifest()`: counts paid orders still needing tracking
+  (`get_orders_needing_tracking` = paid AND not `tracking_sent`) and, if any, WhatsApps the warehouse
+  rep (`WAREHOUSE_WHATSAPP` = `whatsapp:+8613418806654`) a **plain, non-persona** message with a link to
+  the tracking page (§18). Fires **daily at `DAILY_MANIFEST_HOUR` (0 = midnight Mountain)**. (This replaced
+  the old chunked per-order text manifest; `build_warehouse_whatsapp` still exists but is no longer used.)
 - **WEEKLY supplier bulk** — `run_supplier_bulk()`: paid orders where `bulk_ordered`=false → aggregate kits
   per SKU (NO names/addresses/prices) → **email** → set `bulk_ordered`. Fires **Sunday 00:00 Mountain** (week =
   Sun 00:00 → Sat 23:59; last order Sat 11:59pm). Brother forwards it to the supplier himself.
@@ -136,7 +136,7 @@ Railway IDs — project `c3856be2-a3fa-4184-a096-7f8f36f6e762`, service `4336f9e
 - Airtable PAT `pat…` (in Railway `AIRTABLE_API_KEY`); base `apprMJI8obXHOLvJU`.
 - WABA id `1010468724997939`; HK regulatory bundle `BUad64de52410298f0c0252f7c651b9534`.
 
-## 13. Current state (DEPLOYED — commit `f8507ab0`)
+## 13. Current state (DEPLOYED — commit `723da8c3`)
 All of §4–§7 is implemented and **deployed to prod** (force-deployed by SHA; `/health` ok). All env
 vars in §14 are set in Railway. Email path live-tested (Gmail SMTP to both recipients OK). Conversation
 transcript logging to the Messages table is live (§6). Persona/UX hardened per Daniel's live test (§9:
@@ -144,9 +144,11 @@ Lily, no bot self-ID, greet-once, think-first, CJC-blend/no-DAC product understa
 big-multi-item orders no longer drop products, tracking-in-1-3-days line). Proof/legitimacy media
 library is live (§17). Test data purged; base is clean. Decommissioned the stale `order_intake_agent`
 + supplier-leaking
-Test data purged; base is clean. Decommissioned the stale `order_intake_agent` + supplier-leaking
-`fulfillment_agent`. **Not yet done:** the $2–3 live USDT end-to-end test (the only remaining gate
-before treating this as fully proven in prod), and the shipping-notification feature (§16, in design).
+Warehouse tracking page live (§18). Proof-media library live (§17), now de-duped (each clip sent once,
+max 2/convo). Test data purged; base is clean. Decommissioned the stale `order_intake_agent` +
+supplier-leaking `fulfillment_agent`. **Not yet done:** the $2–3 live USDT end-to-end test (the only
+remaining gate before treating this as fully proven in prod), and the rest of the shipping-notification
+feature (§16; the tracking-number stage is now built as §18, vial-photo stage still in design).
 
 ## 14. Open items / TODO
 **Env vars now SET in Railway (all of these are live):**
@@ -156,6 +158,7 @@ before treating this as fully proven in prod), and the shipping-notification fea
 - `GMAIL_USER` = jordan@northlinesupplies.com, `GMAIL_APP_PASSWORD` set (weekly report email via Gmail SMTP).
 - `REPORT_EMAIL` = jordan@northlinesupplies.com,danielmcwilliams62881@gmail.com (weekly report recipients).
 - `WAREHOUSE_WHATSAPP` = `whatsapp:+8613418806654`, `DAILY_MANIFEST_HOUR` = 0 (midnight Mountain).
+- `MANIFEST_TOKEN` set (guards the warehouse tracking page, §18).
 - `OPERATOR_NUMBERS` (optional) — still unset; large-order alerts only log until set.
 
 **Remaining:**
@@ -229,4 +232,28 @@ best-fitting asset by its own judgement and sends it over WhatsApp with a warm c
   (HEVC won't play in WhatsApp).
 - **Source of the current clips:** Daniel sent them via iMessage as small HEVC `.mov`. Converted to H.264 mp4
   with Apple's built-in `avconvert` (see §15). Originals were not committed.
+- **De-dup (important):** an in-memory `_sent_media[phone]` set means each asset is sent **once** per
+  conversation and no more than **2** proof clips total — else the agent re-spams the same video (this
+  actually happened in a live test: repeated "proof of product" → same video over and over until the
+  tester said "STOP"). On a fresh send the handler records `[sent proof video/photo: <key>]` in the
+  conversation history via a `_MEDIA_SENT` sentinel (so the caller doesn't double-append and break role
+  alternation). Cleared on RESET.
 - This is SEPARATE from §16 (per-order shipping notifications) — that's still in design.
+
+## 18. Warehouse tracking page (LIVE) — daily "sheet" for the rep
+Replaces the old daily text manifest. The rep (phone OR computer) gets a plain WhatsApp with a link and
+enters tracking numbers on a simple web page; only the tracking field is editable and it flows straight
+back into Airtable + texts the customer.
+- **Flask routes (`main.py`):** `GET /manifest?token=…` renders a mobile/desktop-friendly page — one card
+  per paid order still needing tracking (`get_orders_needing_tracking`), all fields **read-only** except a
+  per-order tracking input. `POST /manifest/save` writes `tracking_number` + `tracking_sent` + sets
+  `fulfillment_status="shipped"` (an EXISTING single-select option — do NOT invent one, Airtable rejects
+  the whole update otherwise), then texts the customer via `send_tracking_to_customer()` in Lily's voice.
+  Both routes require `?token=` == `MANIFEST_TOKEN` (403 otherwise). Page is centered, max-width 640px.
+- **Airtable:** added `tracking_sent` (checkbox); `tracking_number` already existed. Helpers in
+  `core/airtable_client.py`: `get_orders_needing_tracking`, `set_order_tracking`, `get_lead_phone_for_order`.
+- **Customer phone** to text = the linked Lead's `phone` (kept with the `whatsapp:` prefix).
+- **Auto-text on save** was Jordan's choice (vs. record-only). This IS the tracking-number stage of §16;
+  the vial-photo stage is still in design.
+- Daily ping fires from `run_daily_manifest()` (§7). Link:
+  `https://peptide-agents-production.up.railway.app/manifest?token=<MANIFEST_TOKEN>`.
