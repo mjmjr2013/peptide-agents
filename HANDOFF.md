@@ -4,11 +4,11 @@ Paste this into a fresh Claude Code session (run from `~/peptide-agents`) to con
 It describes the live WhatsApp sales agent, the new order/payment/fulfillment system,
 how to deploy/debug, and what's outstanding. No secret tokens are stored here.
 
-Last updated after **going live** + transcript logging + persona/UX hardening + proof-media library:
-order-intake + crypto-payment + fulfillment-reports system is **deployed to prod** (commit
-`723da8c3`, `/health` ok). All env vars set in Railway; base purged of test data. Remaining: run the
-$2–3 live USDT end-to-end test (§14) and build the shipping-notification feature (§16, in design).
-See §9 (persona), §13/§14/§16/§17 (proof media).
+Last updated after the **live BTC end-to-end test SUCCEEDED** (Daniel bought bac water, paid real
+BTC, verified on-chain, address collected, warehouse pinged — order NL-20260704-0F9D). Deployed at
+commit `2c3126dd`, `/health` ok. Two prod bugs found & fixed during the test: the "ghosting" after
+payment (§9) and in-memory payment state stranded by redeploys (§4a). Remaining: §16 vial-photo
+stage, §14 cleanups. See §4a (payment recovery), §9 (persona), §13/§14/§16/§17/§18 (tracking page).
 
 ---
 
@@ -47,6 +47,16 @@ The agent negotiates, then on Claude action `place`:
 Every order is recorded at step 2 (awaiting); only **paid** orders flow into fulfillment reports.
 Conversation/stage state is in-memory (resets on redeploy). `RESET` from a contact clears their state.
 Large orders >100 kits below cap → operator relay (`OPERATOR_NUMBERS`, currently unset).
+
+**4a. Payment-state recovery after redeploy (IMPORTANT).** `_pending_payments` + stage are in-memory,
+so a redeploy used to STRAND a customer mid-payment (their "did you get it?" pings became a fresh chat;
+the order was never verified — this actually happened during the live BTC test). Fixed: on any inbound,
+if there's no in-memory pending payment but Airtable shows an **awaiting** order for that phone
+(`get_awaiting_order_for_phone`), the agent re-enters `awaiting_payment` (wide 7-day `since` window —
+matching is by unique amount) and verifies normally. Deploys are now safe mid-payment.
+
+While waiting for confirmation, the agent replies with **varied, reassuring, coin-aware** messages
+(BTC sets a 10–30 min expectation; never the same line twice, never silence).
 
 ## 5. Crypto payment verification (`core/crypto_verify.py`) — READ-ONLY, no keys held
 - **USDT = Ethereum (ERC-20)**, verified via **Etherscan API** (`tokentx`; needs `ETHERSCAN_API_KEY`).
@@ -107,8 +117,12 @@ reveals discount % or tiers; no promo in greeting.
 - **Never self-identifies as a bot/AI/"agent"** — she is a real person, Lily; deflects "are you a
   robot?" warmly. (Earlier prod build literally said "I am a service agent" — fixed.)
 - **Greets only ONCE per conversation** and varies wording. A per-phone lock in `twilio_webhook_handler`
-  serializes rapid back-to-back inbound messages (was double-greeting on a race), plus duplicate-reply
-  suppression (`_last_outbound`) drops an outbound identical to the previous one. Both cleared on RESET.
+  serializes rapid back-to-back inbound messages (was double-greeting on a race).
+- ⚠️ **Do NOT re-add duplicate-reply suppression.** An earlier build silenced any outbound identical to
+  the previous one — during the live BTC test this made the agent **ghost a paying customer** (his
+  "did you get it? / are you there?" pings all produced the same "don't see it yet" line, every one
+  suppressed → total silence → looks like a scam). The lock alone prevents the double-greet race; every
+  customer ping must get an answer (the varied waiting messages in §4a make repeats impossible anyway).
 - **Think-first:** the order-prompt JSON's FIRST field is `thinking` (private scratchpad, never sent) so
   she reasons before composing `reply_message`. (The Claude client also has native extended thinking on.)
 - **Product disambiguation** (from Daniel's live test): match loose customer wording to the EXACT catalog
@@ -136,19 +150,22 @@ Railway IDs — project `c3856be2-a3fa-4184-a096-7f8f36f6e762`, service `4336f9e
 - Airtable PAT `pat…` (in Railway `AIRTABLE_API_KEY`); base `apprMJI8obXHOLvJU`.
 - WABA id `1010468724997939`; HK regulatory bundle `BUad64de52410298f0c0252f7c651b9534`.
 
-## 13. Current state (DEPLOYED — commit `723da8c3`)
-All of §4–§7 is implemented and **deployed to prod** (force-deployed by SHA; `/health` ok). All env
-vars in §14 are set in Railway. Email path live-tested (Gmail SMTP to both recipients OK). Conversation
-transcript logging to the Messages table is live (§6). Persona/UX hardened per Daniel's live test (§9:
-Lily, no bot self-ID, greet-once, think-first, CJC-blend/no-DAC product understanding, more "dear",
-big-multi-item orders no longer drop products, tracking-in-1-3-days line). Proof/legitimacy media
-library is live (§17). Test data purged; base is clean. Decommissioned the stale `order_intake_agent`
-+ supplier-leaking
-Warehouse tracking page live (§18). Proof-media library live (§17), now de-duped (each clip sent once,
-max 2/convo). Test data purged; base is clean. Decommissioned the stale `order_intake_agent` +
-supplier-leaking `fulfillment_agent`. **Not yet done:** the $2–3 live USDT end-to-end test (the only
-remaining gate before treating this as fully proven in prod), and the rest of the shipping-notification
-feature (§16; the tracking-number stage is now built as §18, vial-photo stage still in design).
+## 13. Current state (DEPLOYED — commit `2c3126dd`; LIVE E2E TEST PASSED)
+**The live end-to-end test succeeded (2026-07-03, order `NL-20260704-0F9D`):** Daniel ordered 1x bac
+water via WhatsApp, paid **real BTC** (tx `7e026386…`, confirmed on-chain, verified by unique amount),
+address collected (Lumex Health, Kaysville UT), order marked paid in Airtable, and the warehouse rep
+was pinged with the tracking-sheet link (§18). The flow is proven in prod with real money.
+
+Two prod bugs were found during that test and are FIXED (see §4a and the §9 warning): (1) duplicate-
+reply suppression made the agent ghost the customer after payment; (2) in-memory payment state was
+wiped by a redeploy, stranding the in-flight order — recovery from Airtable now handles this.
+
+All of §4–§7 + §17 (proof media, de-duped) + §18 (warehouse tracking page) deployed; `/health` ok. All
+env vars in §14 set. Email path live-tested. Transcript logging live (§6) — now captures EVERYTHING
+outbound incl. the warehouse ping and proof-media sends, so Jordan/Daniel can read every thread in the
+Messages table (group by phone). Persona hardened (§9). Base clean (only real orders). Decommissioned
+the stale `order_intake_agent` + supplier-leaking `fulfillment_agent`. **Not yet done:** §16 vial-photo
+stage (tracking-number stage shipped as §18).
 
 ## 14. Open items / TODO
 **Env vars now SET in Railway (all of these are live):**
@@ -162,8 +179,10 @@ feature (§16; the tracking-number stage is now built as §18, vial-photo stage 
 - `OPERATOR_NUMBERS` (optional) — still unset; large-order alerts only log until set.
 
 **Remaining:**
-- **Run the $2–3 live USDT end-to-end test** (WhatsApp +85292909474 → place → pay exact USDT → verify →
-  address → Airtable). The only gate left before this is fully proven in prod.
+- ~~Run the live end-to-end test~~ ✅ DONE 2026-07-03 with real BTC (see §13). USDT path is code-identical
+  (verified against live Etherscan earlier) but has not had a real-money run yet — optional.
+- Warehouse rep to enter the tracking number for `NL-20260704-0F9D` on the §18 page (customer then gets
+  the tracking text automatically) — watch this complete the first full fulfillment loop.
 
 **Other standing items:**
 - Twilio HK **regulatory bundle** = `pending-review` (WhatsApp unaffected; SMS/voice gated until approved).
