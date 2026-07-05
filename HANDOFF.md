@@ -6,7 +6,7 @@ how to deploy/debug, and what's outstanding. No secret tokens are stored here.
 
 Last updated after the **live BTC end-to-end test SUCCEEDED** (Daniel bought bac water, paid real
 BTC, verified on-chain, address collected, warehouse pinged — order NL-20260704-0F9D). Deployed at
-commit `2c3126dd`, `/health` ok. Two prod bugs found & fixed during the test: the "ghosting" after
+commit `013113db` (daily warehouse manifest now EMAILED to `WAREHOUSE_EMAIL`, §7), `/health` ok. Two prod bugs found & fixed during the test: the "ghosting" after
 payment (§9) and in-memory payment state stranded by redeploys (§4a). Remaining: §16 vial-photo
 stage, §14 cleanups. See §4a (payment recovery), §9 (persona), §13/§14/§16/§17/§18 (tracking page).
 
@@ -182,8 +182,8 @@ stage (tracking-number stage shipped as §18).
 - `GMAIL_USER` = jordan@northlinesupplies.com, `GMAIL_APP_PASSWORD` set (weekly report email via Gmail SMTP).
 - `REPORT_EMAIL` = jordan@northlinesupplies.com,danielmcwilliams62881@gmail.com (weekly report recipients).
 - `WAREHOUSE_WHATSAPP` = `whatsapp:+8613418806654`, `DAILY_MANIFEST_HOUR` = 0 (midnight Mountain).
-- `WAREHOUSE_EMAIL` — **NOT YET SET**: the daily manifest now emails this address (WhatsApp is only
-  the fallback while unset). Set it in Railway to complete the email switch.
+- `WAREHOUSE_EMAIL` = `ybgjwl888@outlook.com` — the daily manifest is emailed here (WhatsApp is only
+  a fallback if this is ever unset). Live-tested 2026-07-05: real manifest email delivered via Gmail SMTP.
 - `MANIFEST_TOKEN` set (guards the warehouse tracking page, §18).
 - `OPERATOR_NUMBERS` (optional) — still unset; large-order alerts only log until set.
 
