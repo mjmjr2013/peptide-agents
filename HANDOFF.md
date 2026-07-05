@@ -94,10 +94,12 @@ Base `apprMJI8obXHOLvJU`. Tables: Leads, Campaigns, Labs, **Orders**, **Order It
 Two independent cadences, two audiences, generated from paid orders; flag-based so each order is
 processed once per cadence:
 - **DAILY warehouse ping** — `run_daily_manifest()`: counts paid orders still needing tracking
-  (`get_orders_needing_tracking` = paid AND not `tracking_sent`) and, if any, WhatsApps the warehouse
-  rep (`WAREHOUSE_WHATSAPP` = `whatsapp:+8613418806654`) a **plain, non-persona** message with a link to
-  the tracking page (§18). Fires **daily at `DAILY_MANIFEST_HOUR` (0 = midnight Mountain)**. (This replaced
-  the old chunked per-order text manifest; `build_warehouse_whatsapp` still exists but is no longer used.)
+  (`get_orders_needing_tracking` = paid AND not `tracking_sent`) and, if any, **emails** the warehouse
+  rep (`WAREHOUSE_EMAIL`, comma-separated ok; Gmail SMTP) a **plain, non-persona** message with a link to
+  the tracking page (§18). If `WAREHOUSE_EMAIL` is unset it falls back to WhatsApp
+  (`WAREHOUSE_WHATSAPP` = `whatsapp:+8613418806654`) so the ping never silently drops. Fires **daily at
+  `DAILY_MANIFEST_HOUR` (0 = midnight Mountain)**. (This replaced the old chunked per-order text
+  manifest; `build_warehouse_whatsapp` still exists but is no longer used.)
 - **WEEKLY supplier bulk** — `run_supplier_bulk()`: paid orders where `bulk_ordered`=false → aggregate kits
   per SKU (NO names/addresses/prices) → **email** → set `bulk_ordered`. Fires **Sunday 00:00 Mountain** (week =
   Sun 00:00 → Sat 23:59; last order Sat 11:59pm). Brother forwards it to the supplier himself.
@@ -180,6 +182,8 @@ stage (tracking-number stage shipped as §18).
 - `GMAIL_USER` = jordan@northlinesupplies.com, `GMAIL_APP_PASSWORD` set (weekly report email via Gmail SMTP).
 - `REPORT_EMAIL` = jordan@northlinesupplies.com,danielmcwilliams62881@gmail.com (weekly report recipients).
 - `WAREHOUSE_WHATSAPP` = `whatsapp:+8613418806654`, `DAILY_MANIFEST_HOUR` = 0 (midnight Mountain).
+- `WAREHOUSE_EMAIL` — **NOT YET SET**: the daily manifest now emails this address (WhatsApp is only
+  the fallback while unset). Set it in Railway to complete the email switch.
 - `MANIFEST_TOKEN` set (guards the warehouse tracking page, §18).
 - `OPERATOR_NUMBERS` (optional) — still unset; large-order alerts only log until set.
 

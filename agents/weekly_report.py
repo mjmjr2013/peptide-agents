@@ -2,9 +2,10 @@ from __future__ import annotations
 """
 Fulfillment reports — two independent cadences, two separate audiences:
 
-  • Warehouse manifest — DAILY. Per-order customer + address + items so the warehouse
-    can make shipping labels and send tracking to clients fast. NO costs/supplier info.
-    Sent over WhatsApp (Twilio) to settings.warehouse_whatsapp.
+  • Warehouse manifest — DAILY. A link to the tracking page (per-order customer +
+    address + items) so the warehouse can make shipping labels and send tracking to
+    clients fast. NO costs/supplier info. Emailed (Gmail SMTP) to
+    settings.warehouse_emails; falls back to WhatsApp if WAREHOUSE_EMAIL is unset.
   • Supplier bulk order — WEEKLY. Total kits per product (SKU) to purchase from the
     supplier. NO customer names/addresses/prices. Emailed (SendGrid) to
     settings.report_emails for you/your brother to review and forward to the supplier.
@@ -65,10 +66,11 @@ def build_warehouse_manifest(orders: list[dict], label: str) -> bytes:
     buf = io.BytesIO(); wb.save(buf); return buf.getvalue()
 
 
-def _send_email(subject: str, body: str, attachments: list[tuple[str, bytes]]) -> bool:
-    recipients = settings.report_emails
+def _send_email(subject: str, body: str, attachments: list[tuple[str, bytes]],
+                recipients: list[str] | None = None) -> bool:
+    recipients = recipients if recipients is not None else settings.report_emails
     if not (settings.gmail_user and settings.gmail_app_password and recipients):
-        print("[reports] Gmail SMTP not configured (GMAIL_USER/GMAIL_APP_PASSWORD/REPORT_EMAIL) — skipping email")
+        print("[reports] Gmail SMTP not configured (GMAIL_USER/GMAIL_APP_PASSWORD/recipients) — skipping email")
         return False
     msg = EmailMessage()
     msg["Subject"] = subject
@@ -136,9 +138,10 @@ def _send_whatsapp(chunks: list[str]) -> bool:
 
 
 def run_daily_manifest() -> dict:
-    """DAILY: ping the warehouse rep over WhatsApp with a link to the tracking page
-    (a phone-friendly sheet showing every paid order still needing a tracking number).
-    The rep enters tracking on the page; it writes to Airtable and texts the customer.
+    """DAILY: email the warehouse rep a link to the tracking page (a phone/desktop-
+    friendly sheet showing every paid order still needing a tracking number). The rep
+    enters tracking on the page; it writes to Airtable and texts the customer.
+    Falls back to WhatsApp if WAREHOUSE_EMAIL is unset.
     """
     orders = airtable.get_orders_needing_tracking()
     n = len(orders)
@@ -150,10 +153,15 @@ def run_daily_manifest() -> dict:
     plural = "order" if n == 1 else "orders"
     body = (f"Northline: {n} {plural} ready to ship. Open the tracking sheet and enter a "
             f"tracking number for each:\n{link}")
+    if settings.warehouse_emails:
+        sent = _send_email(f"Northline shipping manifest — {n} {plural} ready to ship",
+                           body, [], recipients=settings.warehouse_emails)
+        return {"pending": n, "sent": sent, "via": "email"}
+    print("[reports] WAREHOUSE_EMAIL not set — falling back to WhatsApp for daily manifest")
     sent = _send_whatsapp([body])
     if sent and settings.warehouse_whatsapp:
         airtable.log_message(settings.warehouse_whatsapp, "outbound", body)  # visible in transcript
-    return {"pending": n, "sent": sent}
+    return {"pending": n, "sent": sent, "via": "whatsapp"}
 
 
 def run_supplier_bulk() -> dict:

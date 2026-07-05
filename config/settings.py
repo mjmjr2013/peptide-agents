@@ -40,8 +40,15 @@ class Settings:
     # Supplier
     supplier_whatsapp: str = os.environ.get("SUPPLIER_WHATSAPP", "")
 
-    # Warehouse — the daily shipping manifest is sent here over WhatsApp (not email).
-    # Use the whatsapp: scheme, e.g. "whatsapp:+8613418806654".
+    # Warehouse — the daily shipping manifest (tracking-page link) is EMAILED here.
+    # Comma-separated list allowed. If unset, the manifest falls back to WhatsApp
+    # (warehouse_whatsapp below) so the daily ping never silently drops.
+    warehouse_emails: list[str] = [
+        e.strip() for e in os.environ.get("WAREHOUSE_EMAIL", "").split(",") if e.strip()
+    ]
+
+    # Warehouse WhatsApp — fallback transport for the daily manifest when
+    # WAREHOUSE_EMAIL is unset. Use the whatsapp: scheme, e.g. "whatsapp:+8613418806654".
     warehouse_whatsapp: str = os.environ.get("WAREHOUSE_WHATSAPP", "")
 
     # Secret token guarding the warehouse tracking page (/manifest?token=...). The
