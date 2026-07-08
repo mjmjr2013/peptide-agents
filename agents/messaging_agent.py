@@ -1275,6 +1275,35 @@ def send_vial_photo_to_customer(phone: str, media_url: str, name: str = "") -> b
         return False
 
 
+# If the brain is unreachable (Anthropic API outage / exhausted credits / any bug),
+# the customer still gets a warm human answer instead of silence, and we return 200
+# so Twilio doesn't retry and double-log the inbound. Ops get an emailed alert at
+# most once per hour so the outage can't stay silent (that is how the exhausted-
+# credits outage of 2026-07-08 went unnoticed until a live prospect was ghosted).
+_FALLBACK_REPLIES = [
+    "So sorry dear, give me just a little moment — I will be right back with you! 😊",
+    "One moment please dear, I am just checking something for you — back very soon! 🙏",
+    "Sorry to keep you waiting dear! I will get right back to you in a few minutes 😊",
+]
+_last_outage_alert = 0.0
+
+
+def _alert_outage(err: str):
+    global _last_outage_alert
+    now = time.time()
+    if now - _last_outage_alert < 3600:
+        return
+    _last_outage_alert = now
+    try:
+        from agents.weekly_report import _send_email
+        _send_email("ALERT: Northline agent cannot reply to customers",
+                    f"handle_inbound is raising — customers are getting the canned holding reply.\n\n"
+                    f"Error: {err}\n\nIf this mentions credit balance, top up the Anthropic API "
+                    f"account (console.anthropic.com → Plans & Billing).", [])
+    except Exception as e:
+        print(f"[MessagingAgent] outage alert email failed: {e!r}")
+
+
 def twilio_webhook_handler(form_data: dict) -> str:
     from_phone = form_data.get("From", "")
     body = form_data.get("Body", "").strip()
@@ -1290,7 +1319,13 @@ def twilio_webhook_handler(form_data: dict) -> str:
     # and each ping MUST get an answer — silencing repeats made the agent look like it
     # ghosted (and, to a paying customer, like a scam).
     with _lock_for(from_phone):
-        reply = handle_inbound(from_phone, body, name=profile_name)
+        try:
+            reply = handle_inbound(from_phone, body, name=profile_name)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            _alert_outage(repr(e))
+            reply = secrets.choice(_FALLBACK_REPLIES)
 
     if reply:
         airtable.log_message(from_phone, "outbound", reply)

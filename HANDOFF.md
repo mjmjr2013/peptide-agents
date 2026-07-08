@@ -189,6 +189,11 @@ stage (tracking-number stage shipped as §18).
 - `OPERATOR_NUMBERS` (optional) — still unset; large-order alerts only log until set.
 
 **Remaining:**
+- 🔴 **TOP UP ANTHROPIC API CREDITS** (console.anthropic.com → Plans & Billing; enable auto-reload).
+  The account ran dry 2026-07-08 and a live prospect (Jordan's dad, testing) got NO replies — every
+  Claude call 400'd ("credit balance too low"), /sms 500'd, Twilio retried (double-logged inbounds).
+  Since then: webhook has a fallback (customer gets a warm Lily holding line + ops email alert at most
+  once/hour, and /sms always returns 200) — but the agent can't actually SELL until credits are added.
 - ~~Run the live end-to-end test~~ ✅ DONE 2026-07-03 with real BTC (see §13). USDT path is code-identical
   (verified against live Etherscan earlier) but has not had a real-money run yet — optional.
 - Warehouse rep to enter the tracking number for `NL-20260704-0F9D` on the §18 page (customer then gets
