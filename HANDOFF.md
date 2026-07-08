@@ -315,3 +315,16 @@ otherwise fund it indefinitely). Two layers in `agents/messaging_agent.py`:
   the thread; full transcript remains in Airtable.
 - Third layer (manual, console-only): a monthly **workspace spend limit** at console.anthropic.com —
   the hard ceiling auto-reload cannot cross. Jordan to set (~$500/mo suggested at current volume).
+
+## 20. Transcript reviewer — QA supervisor agent (LIVE)
+`agents/transcript_reviewer.py`, run by the in-process scheduler every `REVIEW_INTERVAL_HOURS`
+(default 6). Pulls the Airtable Messages transcript, finds customer threads with recent activity
+(warehouse/operator/supplier numbers excluded), and has Claude QA each one against the business
+rules: every message answered, persona intact (never admits AI), prices/discounts within authority
+(5/10/15% caps, catalog-checked — the reviewer prompt embeds the live catalog), no invented or
+extra products, correct escalation of >100-kit below-cap demands, correct order flow. Knows the
+guardrail/canned replies (§19) and waiting-on-payment reassurances are NORMAL, so no false alarms.
+Emails `REPORT_EMAIL` a per-thread issue list with severities ONLY when something is flagged
+(subject counts HIGH issues); clean runs just log. Cost ≈ one small Claude call per active thread
+per run. Manual run: `python -m agents.transcript_reviewer [lookback_hours]`.
+First live run correctly flagged the 2026-07-08 outage thread (customer ignored — HIGH).

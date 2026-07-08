@@ -52,6 +52,8 @@ def run_report_scheduler():
     last_bulk_week = None
     last_canary_hour = None
     last_balance_day = None
+    review_every = float(os.environ.get("REVIEW_INTERVAL_HOURS", "6")) * 3600
+    last_review_ts = time.time()  # first review one interval after boot
     while True:
         try:
             now = datetime.now(tz)
@@ -70,6 +72,11 @@ def run_report_scheduler():
             if last_balance_day != day:
                 check_twilio_balance()
                 last_balance_day = day
+            # QA: transcript reviewer — every REVIEW_INTERVAL_HOURS (see transcript_reviewer.py)
+            if time.time() - last_review_ts >= review_every:
+                from agents.transcript_reviewer import run_transcript_review
+                print("[Main/Reviewer]", run_transcript_review())
+                last_review_ts = time.time()
         except Exception as e:
             print(f"[Main/Reports] {e}")
         time.sleep(300)  # check every 5 minutes
