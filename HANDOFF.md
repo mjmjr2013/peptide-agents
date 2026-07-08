@@ -198,7 +198,9 @@ stage (tracking-number stage shipped as §18).
   /sms 500'd, Twilio retried/double-logged. Fixes now in place: webhook fallback holding line +
   hourly canary alert (§7), so a repeat surfaces in ≤1h and customers never get silence.)
 - ~~Twilio auto-recharge~~ ✅ enabled 2026-07-08 (balance was $14.31; daily health check alerts
-  below $25 as a backstop). Note: daily WhatsApp manifests to the warehouse rep 7/3–7/5 were all
+  below $25 as a backstop). Railway billing also confirmed set up (Hobby; postpaid to card —
+  usage ~$2–4/mo, scales negligibly with customers). **All billing is now self-refilling:**
+  Anthropic auto-reload + Twilio auto-recharge + Railway postpaid, watched by the §7 health monitor. Note: daily WhatsApp manifests to the warehouse rep 7/3–7/5 were all
   `undelivered` (why tracking never got entered) — the email switch (§7) was the fix.
 - 🟡 **Airtable free plan caps at 1,000 records/base** — the Messages table logs every WhatsApp message
   (129 rows after ~2 weeks) and will hit the cap first. Options: upgrade to Team (~$20/user/mo) or add
