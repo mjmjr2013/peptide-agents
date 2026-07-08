@@ -193,15 +193,13 @@ stage (tracking-number stage shipped as §18).
 - `OPERATOR_NUMBERS` (optional) — still unset; large-order alerts only log until set.
 
 **Remaining:**
-- 🔴 **TOP UP ANTHROPIC API CREDITS** (console.anthropic.com → Plans & Billing; enable auto-reload).
-  The account ran dry 2026-07-08 and a live prospect (Jordan's dad, testing) got NO replies — every
-  Claude call 400'd ("credit balance too low"), /sms 500'd, Twilio retried (double-logged inbounds).
-  Since then: webhook has a fallback (customer gets a warm Lily holding line + ops email alert at most
-  once/hour, and /sms always returns 200) — but the agent can't actually SELL until credits are added.
-- 🟠 **Twilio balance was $14.31 on 2026-07-08** — enable auto-recharge (console.twilio.com → Billing).
-  At $0 all WhatsApp stops. The daily health check (§7) alerts below $25 as a backstop. Also: the daily
-  WhatsApp manifests to the warehouse rep on 7/3–7/5 were all `undelivered` (why tracking never got
-  entered) — the email switch (§7) was the fix.
+- ~~Top up Anthropic credits~~ ✅ DONE 2026-07-08: credits added + **auto-reload enabled**; canary
+  verified UP. (Incident: account ran dry, a live prospect got NO replies — every Claude call 400'd,
+  /sms 500'd, Twilio retried/double-logged. Fixes now in place: webhook fallback holding line +
+  hourly canary alert (§7), so a repeat surfaces in ≤1h and customers never get silence.)
+- ~~Twilio auto-recharge~~ ✅ enabled 2026-07-08 (balance was $14.31; daily health check alerts
+  below $25 as a backstop). Note: daily WhatsApp manifests to the warehouse rep 7/3–7/5 were all
+  `undelivered` (why tracking never got entered) — the email switch (§7) was the fix.
 - 🟡 **Airtable free plan caps at 1,000 records/base** — the Messages table logs every WhatsApp message
   (129 rows after ~2 weeks) and will hit the cap first. Options: upgrade to Team (~$20/user/mo) or add
   a pruning job for old Messages rows. Attachments (vial photos, ~30–100KB each) are nowhere near the 1GB cap.
