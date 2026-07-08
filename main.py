@@ -45,20 +45,31 @@ def run_report_scheduler():
     Guarded so each fires at most once per day / per week."""
     from datetime import datetime
     from agents.weekly_report import run_daily_manifest, run_supplier_bulk
+    from agents.health_monitor import check_claude, check_twilio_balance
     tz = _report_tz()
     daily_hour = int(os.environ.get("DAILY_MANIFEST_HOUR", "7"))
     last_manifest_day = None
     last_bulk_week = None
+    last_canary_hour = None
+    last_balance_day = None
     while True:
         try:
             now = datetime.now(tz)
             day = now.strftime("%Y-%m-%d")
+            hour = now.strftime("%Y-%m-%d %H")
             if now.hour == daily_hour and last_manifest_day != day:
                 print(f"[Main/Reports] daily manifest {day}:", run_daily_manifest())
                 last_manifest_day = day
             if now.weekday() == 6 and now.hour == 0 and last_bulk_week != day:  # Sunday 00:xx
                 print(f"[Main/Reports] weekly supplier bulk {day}:", run_supplier_bulk())
                 last_bulk_week = day
+            # Health: hourly Claude canary; daily Twilio balance check (see health_monitor.py)
+            if last_canary_hour != hour:
+                check_claude()
+                last_canary_hour = hour
+            if last_balance_day != day:
+                check_twilio_balance()
+                last_balance_day = day
         except Exception as e:
             print(f"[Main/Reports] {e}")
         time.sleep(300)  # check every 5 minutes

@@ -108,6 +108,10 @@ processed once per cadence:
   comma-separated `REPORT_EMAIL` (jordan@northlinesupplies.com + danielmcwilliams62881@gmail.com).
   SendGrid was **retired** (the merged Twilio Email console gated everything behind domain auth).
 - Scheduler runs in-process in the webhook app (`run_report_scheduler`, checks every 5 min, guarded once/day & once/week).
+- The same scheduler runs the **health monitor** (`agents/health_monitor.py`): HOURLY Claude canary
+  (tiny real API call; email alert on failure, re-alert every 6h, "resolved" email on recovery — catches
+  credit exhaustion before a customer does) and DAILY Twilio balance check (alert below
+  `TWILIO_BALANCE_ALERT_USD`, default $25). Alerts email `REPORT_EMAIL`.
 - One-shot CLI: `python main.py daily` | `python main.py weekly` | `python main.py report <week-tag>` (preview, no marking).
 
 ## 8. Pricing (`core/pricing.py` + `core/price_image.py`)
@@ -194,6 +198,13 @@ stage (tracking-number stage shipped as §18).
   Claude call 400'd ("credit balance too low"), /sms 500'd, Twilio retried (double-logged inbounds).
   Since then: webhook has a fallback (customer gets a warm Lily holding line + ops email alert at most
   once/hour, and /sms always returns 200) — but the agent can't actually SELL until credits are added.
+- 🟠 **Twilio balance was $14.31 on 2026-07-08** — enable auto-recharge (console.twilio.com → Billing).
+  At $0 all WhatsApp stops. The daily health check (§7) alerts below $25 as a backstop. Also: the daily
+  WhatsApp manifests to the warehouse rep on 7/3–7/5 were all `undelivered` (why tracking never got
+  entered) — the email switch (§7) was the fix.
+- 🟡 **Airtable free plan caps at 1,000 records/base** — the Messages table logs every WhatsApp message
+  (129 rows after ~2 weeks) and will hit the cap first. Options: upgrade to Team (~$20/user/mo) or add
+  a pruning job for old Messages rows. Attachments (vial photos, ~30–100KB each) are nowhere near the 1GB cap.
 - ~~Run the live end-to-end test~~ ✅ DONE 2026-07-03 with real BTC (see §13). USDT path is code-identical
   (verified against live Etherscan earlier) but has not had a real-money run yet — optional.
 - Warehouse rep to enter the tracking number for `NL-20260704-0F9D` on the §18 page (customer then gets

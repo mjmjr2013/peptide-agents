@@ -1,0 +1,84 @@
+from __future__ import annotations
+"""
+Health monitor — makes billing/credit exhaustion loud instead of silent.
+
+  • Claude canary — HOURLY. A tiny real API call through the same client the
+    sales agent uses. If it fails (credits exhausted, key revoked, outage),
+    email ops immediately; re-alert every 6h while failing; email once on
+    recovery. This catches the 2026-07-08 failure mode (Anthropic credits ran
+    dry, prospects got silence) BEFORE a customer hits it.
+  • Twilio balance — DAILY. Emails ops when the balance drops below
+    TWILIO_BALANCE_ALERT_USD (default $25) so outbound WhatsApp never dies
+    mid-conversation. (Auto-recharge in the Twilio console is the real fix;
+    this is the backstop.)
+
+Alerts go to REPORT_EMAIL via the existing Gmail SMTP path.
+"""
+import os
+import time
+
+from config import settings
+
+_REALERT_SECS = 6 * 3600
+
+_state = {
+    "claude_failing": False,
+    "last_claude_alert": 0.0,
+    "last_twilio_alert": 0.0,
+}
+
+
+def _email(subject: str, body: str) -> None:
+    try:
+        from agents.weekly_report import _send_email
+        _send_email(subject, body, [])
+    except Exception as e:
+        print(f"[Health] alert email failed: {e!r}")
+
+
+def check_claude() -> bool:
+    """One tiny real Claude call (~$0.001). Returns True if the brain is up."""
+    from core.claude_client import claude
+    try:
+        claude.create(system="You are a health check.",
+                      messages=[{"role": "user", "content": "Reply with the single word: ok"}],
+                      max_tokens=64)
+    except Exception as e:
+        print(f"[Health] Claude canary FAILED: {e!r}")
+        now = time.time()
+        if not _state["claude_failing"] or now - _state["last_claude_alert"] > _REALERT_SECS:
+            _state["last_claude_alert"] = now
+            _email("ALERT: Northline agent brain is DOWN (Claude API failing)",
+                   f"The hourly canary call to the Anthropic API failed:\n\n{e!r}\n\n"
+                   f"Customers messaging the WhatsApp number are getting the canned holding "
+                   f"reply, not Lily. If the error mentions credit balance, top up at "
+                   f"console.anthropic.com → Plans & Billing (and turn on auto-reload).")
+        _state["claude_failing"] = True
+        return False
+    if _state["claude_failing"]:
+        _email("RESOLVED: Northline agent brain is back up",
+               "The hourly Claude canary call succeeded again. Lily is answering normally.")
+    _state["claude_failing"] = False
+    return True
+
+
+def check_twilio_balance() -> float | None:
+    """Daily WhatsApp-money check. Returns the balance, or None on failure."""
+    threshold = float(os.environ.get("TWILIO_BALANCE_ALERT_USD", "25"))
+    try:
+        from agents.messaging_agent import twilio_client
+        bal = twilio_client.balance.fetch()
+        balance = float(bal.balance)
+        print(f"[Health] Twilio balance: {balance:.2f} {bal.currency}")
+    except Exception as e:
+        print(f"[Health] Twilio balance check failed: {e!r}")
+        return None
+    now = time.time()
+    if balance < threshold and now - _state["last_twilio_alert"] > 20 * 3600:
+        _state["last_twilio_alert"] = now
+        _email(f"ALERT: Twilio balance low (${balance:.2f})",
+               f"The Twilio balance is ${balance:.2f} (alert threshold ${threshold:.2f}).\n"
+               f"When it hits $0, ALL WhatsApp sending and receiving stops.\n\n"
+               f"Top up / enable auto-recharge: console.twilio.com → Billing → "
+               f"Manage billing → Auto recharge.")
+    return balance
