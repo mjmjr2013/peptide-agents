@@ -1254,6 +1254,27 @@ def send_tracking_to_customer(phone: str, tracking: str, name: str = "") -> bool
         return False
 
 
+def send_vial_photo_to_customer(phone: str, media_url: str, name: str = "") -> bool:
+    """WhatsApp a customer the photo of their packed vials in Lily's voice.
+    Returns True if sent. Best-effort — logs and returns False on failure."""
+    if not phone or not media_url:
+        return False
+    from_number = settings.twilio_whatsapp_from if "whatsapp" in phone else settings.twilio_phone_number
+    dear = f"{name}, " if name else ""
+    body = (f"Look, {dear}dear! 😊 Your vials are packed and ready — I wanted you to see them "
+            f"before they ship. Everything is prepared with care. Thank you again for your "
+            f"order, dear! 🙏")
+    try:
+        msg = twilio_client.messages.create(body=body, from_=from_number, to=phone,
+                                            media_url=[media_url])
+        airtable.log_message(phone, "outbound", body + " [sent vial photo]")  # transcript
+        print(f"[VialPhoto] Sent vial photo to {phone}: SID={msg.sid}")
+        return True
+    except Exception as e:
+        print(f"[VialPhoto] Send to {phone} failed: {e!r}")
+        return False
+
+
 def twilio_webhook_handler(form_data: dict) -> str:
     from_phone = form_data.get("From", "")
     body = form_data.get("Body", "").strip()

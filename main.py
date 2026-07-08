@@ -182,10 +182,11 @@ def start_webhook_server(port: int = 5000):
             return send_file(str(PROOF_DIR / filename))
 
         # ── Warehouse tracking page ──────────────────────────────────────────
-        # A phone-friendly page the warehouse rep opens from a WhatsApp link. Shows
-        # today's paid orders (read-only) with ONE editable field each: tracking #.
-        # On save, the tracking number is written to Airtable and texted to the
-        # customer automatically. Guarded by MANIFEST_TOKEN.
+        # A phone-friendly page the warehouse rep opens from the daily email. Shows
+        # paid orders (read-only) with TWO actions each: enter the tracking number,
+        # and upload a photo of the packed vials. Each action writes to Airtable and
+        # messages the customer automatically, then disappears from the card.
+        # Guarded by MANIFEST_TOKEN.
         def _manifest_authorized(req):
             from config import settings
             tok = req.values.get("token", "")
@@ -201,15 +202,19 @@ def start_webhook_server(port: int = 5000):
                 abort(403)
             token = escape(settings.manifest_token)
             saved = request.args.get("saved", "")
+            photo = request.args.get("photo", "")
             try:
-                orders = airtable.get_orders_needing_tracking()
+                orders = airtable.get_orders_needing_fulfillment()
             except Exception as e:
                 print(f"[Manifest] load failed: {e!r}")
                 orders = []
             orders.sort(key=lambda o: o["fields"].get("order_ref", ""))
 
-            banner = (f'<div class="ok">✓ Tracking saved and sent to the customer'
-                      f'{(" for " + escape(saved)) if saved else ""}.</div>') if saved else ""
+            banner = ""
+            if saved:
+                banner = f'<div class="ok">✓ Tracking saved and sent to the customer for {escape(saved)}.</div>'
+            elif photo:
+                banner = f'<div class="ok">✓ Vial photo sent to the customer for {escape(photo)}.</div>'
             cards = []
             for o in orders:
                 f = o["fields"]
@@ -222,21 +227,43 @@ def start_webhook_server(port: int = 5000):
                     " ".join(y for y in [f.get("city"), f.get("state_province"), f.get("postal_code")] if y),
                     f.get("country")] if x)
                 ref = escape(f.get("order_ref", "") or o["id"])
-                cards.append(f"""
-                <div class="card">
-                  <div class="ref">{ref}</div>
-                  <div class="name">{escape(f.get('ship_name',''))}</div>
-                  <div class="addr">{addr}</div>
-                  <div class="items"><b>Items:</b><br>{items}</div>
+                if f.get("tracking_sent"):
+                    tracking_block = '<div class="done">✓ Tracking sent</div>'
+                else:
+                    tracking_block = f"""
                   <form method="POST" action="/manifest/save">
                     <input type="hidden" name="token" value="{token}">
                     <input type="hidden" name="order_id" value="{escape(o['id'])}">
                     <input class="trk" name="tracking" inputmode="latin" autocapitalize="characters"
                            placeholder="Enter tracking number" required>
                     <button type="submit">Save &amp; send to customer</button>
-                  </form>
+                  </form>"""
+                if f.get("vial_photo_sent"):
+                    photo_block = '<div class="done">✓ Vial photo sent</div>'
+                else:
+                    photo_block = f"""
+                  <form method="POST" action="/manifest/photo" enctype="multipart/form-data">
+                    <input type="hidden" name="token" value="{token}">
+                    <input type="hidden" name="order_id" value="{escape(o['id'])}">
+                    <label class="file">📷 Vial photo — take / choose picture
+                      <input type="file" name="photo" accept="image/*" required
+                             onchange="this.closest('form').querySelector('button').disabled=!this.files.length;
+                                       this.closest('label').classList.add('picked');
+                                       this.closest('label').firstChild.textContent='📷 ' + this.files[0].name + ' ';">
+                    </label>
+                    <button type="submit" class="photo-btn" disabled
+                            onclick="this.textContent='Sending…'">Send photo to customer</button>
+                  </form>"""
+                cards.append(f"""
+                <div class="card">
+                  <div class="ref">{ref}</div>
+                  <div class="name">{escape(f.get('ship_name',''))}</div>
+                  <div class="addr">{addr}</div>
+                  <div class="items"><b>Items:</b><br>{items}</div>
+                  {tracking_block}
+                  {photo_block}
                 </div>""")
-            body = "".join(cards) if cards else '<div class="empty">🎉 All caught up — no orders waiting for tracking.</div>'
+            body = "".join(cards) if cards else '<div class="empty">🎉 All caught up — nothing waiting.</div>'
             html = f"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Northline — Shipping Tracking</title>
@@ -252,10 +279,19 @@ def start_webhook_server(port: int = 5000):
   button:active{{background:#0768cc}}
   .ok{{background:#e7f8ec;color:#16692e;border-radius:10px;padding:12px;margin-bottom:14px;font-weight:600}}
   .empty{{background:#fff;border-radius:14px;padding:28px 16px;text-align:center;color:#555}}
+  .done{{color:#16692e;font-weight:600;font-size:14px;margin:10px 0}}
+  form{{margin-top:10px}}
+  .file{{display:block;font-size:15px;font-weight:600;color:#0a84ff;border:1.5px dashed #0a84ff;
+        border-radius:10px;padding:12px;text-align:center;margin-bottom:10px;cursor:pointer}}
+  .file.picked{{border-style:solid;background:#eef6ff}}
+  .file input{{display:none}}
+  .photo-btn{{background:#34c759}} .photo-btn:active{{background:#28a745}}
+  button:disabled{{opacity:.45}}
 </style></head><body>
 <div class="wrap">
-<h1>📦 Shipping Tracking</h1>
-<div class="sub">Enter the tracking number for each order. It is sent to the customer right away.</div>
+<h1>📦 Shipping Manifest</h1>
+<div class="sub">For each order: enter the tracking number, and upload a photo of the packed vials.
+Each is sent to the customer right away.</div>
 {banner}{body}
 </div>
 </body></html>"""
@@ -285,6 +321,48 @@ def start_webhook_server(port: int = 5000):
                 print(f"[Manifest] save failed for {order_id}: {e!r}")
                 ref = ""
             return redirect(f"/manifest?token={quote(settings.manifest_token)}&saved={quote(ref)}")
+
+        @app.route("/manifest/photo", methods=["POST"])
+        def manifest_photo():
+            """Warehouse uploads a photo of the packed vials for one order. The photo
+            is stored on the order in Airtable (permanent record) and immediately
+            WhatsApped to that order's customer in Lily's voice."""
+            from flask import request, redirect, abort
+            from urllib.parse import quote
+            from config import settings
+            from core.airtable_client import airtable
+            from agents.messaging_agent import send_vial_photo_to_customer
+            if not _manifest_authorized(request):
+                abort(403)
+            order_id = request.form.get("order_id", "")
+            up = request.files.get("photo")
+            if not order_id or not up or not up.filename:
+                return redirect(f"/manifest?token={quote(settings.manifest_token)}")
+            ref = ""
+            try:
+                # Normalize whatever the phone camera produced: fix EXIF rotation,
+                # flatten to RGB JPEG, cap the long edge — keeps it well under the
+                # 5 MB Airtable-upload and WhatsApp-image limits.
+                import io
+                from PIL import Image, ImageOps
+                img = ImageOps.exif_transpose(Image.open(up.stream))
+                img = img.convert("RGB")
+                img.thumbnail((1600, 1600))
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG", quality=85)
+                data = buf.getvalue()
+
+                order = airtable.get_order(order_id)
+                ref = order["fields"].get("order_ref", "")
+                url = airtable.attach_vial_photo(order_id, data, f"vials_{ref or order_id}.jpg")
+                phone = airtable.get_lead_phone_for_order(order)
+                name = order["fields"].get("ship_name", "")
+                if send_vial_photo_to_customer(phone, url, name):
+                    airtable.mark_vial_photo_sent(order_id)
+            except Exception as e:
+                print(f"[Manifest] vial photo failed for {order_id}: {e!r}")
+                return redirect(f"/manifest?token={quote(settings.manifest_token)}")
+            return redirect(f"/manifest?token={quote(settings.manifest_token)}&photo={quote(ref)}")
 
         @app.route("/health")
         def health():

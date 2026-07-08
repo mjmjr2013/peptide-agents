@@ -6,9 +6,10 @@ how to deploy/debug, and what's outstanding. No secret tokens are stored here.
 
 Last updated after the **live BTC end-to-end test SUCCEEDED** (Daniel bought bac water, paid real
 BTC, verified on-chain, address collected, warehouse pinged — order NL-20260704-0F9D). Deployed at
-commit `013113db` (daily warehouse manifest now EMAILED to `WAREHOUSE_EMAIL`, §7), `/health` ok. Two prod bugs found & fixed during the test: the "ghosting" after
-payment (§9) and in-memory payment state stranded by redeploys (§4a). Remaining: §16 vial-photo
-stage, §14 cleanups. See §4a (payment recovery), §9 (persona), §13/§14/§16/§17/§18 (tracking page).
+commit `013113db`+ (daily warehouse manifest EMAILED to `WAREHOUSE_EMAIL` §7; §16 vial-photo stage BUILT
+into the manifest page §18). Two prod bugs found & fixed during the test: the "ghosting" after
+payment (§9) and in-memory payment state stranded by redeploys (§4a). Remaining: §14 cleanups.
+See §4a (payment recovery), §9 (persona), §13/§14/§16/§17/§18 (manifest page).
 
 ---
 
@@ -217,30 +218,25 @@ stage (tracking-number stage shipped as §18).
   Terminal can't read `~/Library/Messages/Attachments` (no Full Disk Access) → get files out of Messages by
   right-click → Copy, then paste (⌘V) into a Finder folder (the repo). Check codec/size with `mdls`/`ls`.
 
-## 16. PENDING FEATURE — shipping notifications to customers (IN DESIGN, not built)
-Goal: the agent sends each customer fulfillment updates over WhatsApp, in two stages at two different times:
-  1. **Immediately** (order placed → warehouse makes label): send the customer their **tracking number**
-     (and possibly the shipping-label image "for legitimacy" — Jordan to confirm tracking-only vs +label).
-  2. **~1–2 weeks later** (weekly bulk arrives → warehouse divvies vials per order → photographs them):
-     send the customer the **vial photo** before it ships.
-Both are per-order, tied to a specific customer, and sent BY the agent.
-
-Open design question (Jordan is confirming the workflow with the warehouse contact before we build):
-**how does the warehouse hand each label/tracking/photo back to the system, and how do we match it to the
-right customer/order?** Leading proposal (recommended, not yet approved): warehouse **replies on WhatsApp**
-to the agent, referencing the **order ref** from the daily manifest — e.g. `TRACK <order_ref> <tracking#>`
-for stage 1, and a photo captioned `VIALS <order_ref>` for stage 2. The agent recognizes the warehouse
-sender (treat `WAREHOUSE_WHATSAPP` like an operator/special sender, see `_is_operator` pattern), matches
-the order, and forwards to that order's customer. Alternatives floated: warehouse enters tracking + uploads
-image in Airtable (needs Airtable access; a scheduler then sends), or Jordan/Daniel relay manually.
-
-Implementation notes for whoever builds it:
-- Likely new Orders fields: `tracking_number` (text), `label_image`/`vial_photo` (attachment), and
-  per-stage sent flags (e.g. `tracking_sent`, `vial_photo_sent`) so each notice fires once.
-- Relaying the warehouse's inbound **photo** to the customer needs re-hosting (see §15 gotcha) — simplest
-  is to save it to the order's Airtable attachment field, then send that public URL as the Twilio `media_url`.
-  Bonus: gives a permanent label/vial-photo record in Airtable.
-- Recognize the warehouse number as a special inbound sender (do NOT treat its messages as a prospect).
+## 16. Shipping notifications to customers (BOTH STAGES BUILT — see §18)
+The agent sends each customer fulfillment updates over WhatsApp, in two stages:
+  1. **Tracking number** (immediately, when the warehouse makes the label) — LIVE since the §18 page
+     shipped; rep enters it on the manifest page → Airtable + auto-text in Lily's voice.
+  2. **Vial photo** (~1–2 weeks later, when the weekly bulk arrives and vials are divvied per order) —
+     LIVE: the manifest page (§18) has a per-order **photo upload**. The rep taps it (phone camera or
+     file picker), the photo is stored on the order (`vial_photo` attachment field — permanent record),
+     and the agent WhatsApps it to that customer with a Lily-voice caption, then sets `vial_photo_sent`.
+How the match problem was solved: the rep uploads **on the order's own card** on the manifest page, so
+photo→order→customer matching is structural — no order refs to type, no WhatsApp caption parsing, no
+special-sender handling. (The old `VIALS <order_ref>` WhatsApp-reply proposal was dropped; warehouse
+comms moved to email + the web page anyway.)
+Mechanics: `POST /manifest/photo` (token-guarded) → Pillow normalizes the image (EXIF rotation fixed,
+RGB JPEG, long edge ≤1600 px — safely under Airtable's 5 MB upload cap and WhatsApp's image limit) →
+`airtable.attach_vial_photo()` (pyairtable `upload_attachment`, content.airtable.com API) returns the
+Airtable-hosted URL → `send_vial_photo_to_customer()` sends it as Twilio `media_url` (send is immediate;
+Airtable attachment URLs expire after ~2 h) → `mark_vial_photo_sent`. Orders fields `vial_photo`
+(attachment) + `vial_photo_sent` (checkbox) created 2026-07-05 via metadata API. If the Twilio send
+fails, the flag stays unset so the card stays on the page for a retry (re-upload appends another photo).
 
 ## 17. Proof / legitimacy media library (LIVE)
 When a prospect asks for proof we're a real lab / wants to see the product, the agent ("Lily") picks the
@@ -268,20 +264,22 @@ best-fitting asset by its own judgement and sends it over WhatsApp with a warm c
   alternation). Cleared on RESET.
 - This is SEPARATE from §16 (per-order shipping notifications) — that's still in design.
 
-## 18. Warehouse tracking page (LIVE) — daily "sheet" for the rep
-Replaces the old daily text manifest. The rep (phone OR computer) gets a plain WhatsApp with a link and
-enters tracking numbers on a simple web page; only the tracking field is editable and it flows straight
-back into Airtable + texts the customer.
+## 18. Warehouse manifest page (LIVE) — daily "sheet" for the rep
+Replaces the old daily text manifest. The rep (phone OR computer) gets a plain daily **email** (§7) with
+a link and completes each order on a simple web page — enter the **tracking number** and upload the
+**vial photo**; both flow straight into Airtable + message the customer automatically.
 - **Flask routes (`main.py`):** `GET /manifest?token=…` renders a mobile/desktop-friendly page — one card
-  per paid order still needing tracking (`get_orders_needing_tracking`), all fields **read-only** except a
-  per-order tracking input. `POST /manifest/save` writes `tracking_number` + `tracking_sent` + sets
-  `fulfillment_status="shipped"` (an EXISTING single-select option — do NOT invent one, Airtable rejects
-  the whole update otherwise), then texts the customer via `send_tracking_to_customer()` in Lily's voice.
-  Both routes require `?token=` == `MANIFEST_TOKEN` (403 otherwise). Page is centered, max-width 640px.
-- **Airtable:** added `tracking_sent` (checkbox); `tracking_number` already existed. Helpers in
-  `core/airtable_client.py`: `get_orders_needing_tracking`, `set_order_tracking`, `get_lead_phone_for_order`.
+  per paid order with outstanding work (`get_orders_needing_fulfillment` = paid AND (needs tracking OR
+  needs vial photo)); each card shows a tracking form (until `tracking_sent`) and a photo-upload form
+  (until `vial_photo_sent`), with green ✓ markers for the completed half. `POST /manifest/save` writes
+  `tracking_number` + `tracking_sent` + sets `fulfillment_status="shipped"` (an EXISTING single-select
+  option — do NOT invent one, Airtable rejects the whole update otherwise), then texts the customer via
+  `send_tracking_to_customer()` in Lily's voice. `POST /manifest/photo` = the vial-photo stage (§16 has
+  full mechanics). All routes require `?token=` == `MANIFEST_TOKEN` (403 otherwise). Max-width 640px.
+- **Airtable:** `tracking_sent`, `vial_photo` (attachment), `vial_photo_sent` (checkbox). Helpers in
+  `core/airtable_client.py`: `get_orders_needing_fulfillment` (also `get_orders_needing_tracking`, kept),
+  `set_order_tracking`, `attach_vial_photo`, `mark_vial_photo_sent`, `get_lead_phone_for_order`.
 - **Customer phone** to text = the linked Lead's `phone` (kept with the `whatsapp:` prefix).
-- **Auto-text on save** was Jordan's choice (vs. record-only). This IS the tracking-number stage of §16;
-  the vial-photo stage is still in design.
-- Daily ping fires from `run_daily_manifest()` (§7). Link:
-  `https://peptide-agents-production.up.railway.app/manifest?token=<MANIFEST_TOKEN>`.
+- **Auto-send on save/upload** was Jordan's choice (vs. record-only). Both §16 stages ride this page.
+- Daily ping fires from `run_daily_manifest()` (§7) — the email now says how many orders need tracking
+  vs. vial photos. Link: `https://peptide-agents-production.up.railway.app/manifest?token=<MANIFEST_TOKEN>`.

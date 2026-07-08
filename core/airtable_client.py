@@ -233,6 +233,25 @@ class AirtableClient:
             "fulfillment_status": "shipped",
         })
 
+    def get_orders_needing_fulfillment(self) -> list[dict]:
+        """Paid orders with warehouse work outstanding: tracking number not yet
+        entered OR vial photo not yet sent. Drives the /manifest page + daily email."""
+        return self.orders.all(
+            formula="AND({payment_status}='paid',OR(NOT({tracking_sent}),NOT({vial_photo_sent})))")
+
+    def attach_vial_photo(self, order_id: str, content: bytes, filename: str,
+                          content_type: str = "image/jpeg") -> str:
+        """Upload a vial photo to the order's `vial_photo` attachment field (permanent
+        record) and return the Airtable-hosted URL — public long enough for Twilio to
+        fetch it as WhatsApp media (send immediately; the URLs expire after ~2h)."""
+        resp = self.orders.upload_attachment(order_id, "vial_photo", filename, content,
+                                             content_type=content_type)
+        atts = next(iter(resp.get("fields", {}).values()), [])
+        return atts[-1]["url"] if atts else ""
+
+    def mark_vial_photo_sent(self, order_id: str) -> dict:
+        return self.orders.update(order_id, {"vial_photo_sent": True})
+
     def get_recent_messages_for_phone(self, phone: str, limit: int = 30) -> list[dict]:
         """Chronological transcript rows for one prospect (for conversation rebuild
         after a redeploy). phone may include the whatsapp: prefix; rows store it bare."""

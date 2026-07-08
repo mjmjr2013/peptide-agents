@@ -143,16 +143,21 @@ def run_daily_manifest() -> dict:
     enters tracking on the page; it writes to Airtable and texts the customer.
     Falls back to WhatsApp if WAREHOUSE_EMAIL is unset.
     """
-    orders = airtable.get_orders_needing_tracking()
+    orders = airtable.get_orders_needing_fulfillment()
     n = len(orders)
     if n == 0:
-        print("[reports] daily manifest: no orders need tracking")
+        print("[reports] daily manifest: no orders need tracking or vial photos")
         return {"pending": 0, "sent": False}
+    need_trk = sum(1 for o in orders if not o["fields"].get("tracking_sent"))
+    need_pic = sum(1 for o in orders if not o["fields"].get("vial_photo_sent"))
     from agents.messaging_agent import _BASE_URL
     link = f"{_BASE_URL}/manifest?token={settings.manifest_token}"
     plural = "order" if n == 1 else "orders"
-    body = (f"Northline: {n} {plural} ready to ship. Open the tracking sheet and enter a "
-            f"tracking number for each:\n{link}")
+    todo = " and ".join(x for x in [
+        f"{need_trk} need a tracking number" if need_trk else "",
+        f"{need_pic} need a photo of the packed vials" if need_pic else ""] if x)
+    body = (f"Northline: {n} {plural} to process — {todo}. Open the manifest sheet and "
+            f"complete each order:\n{link}")
     if settings.warehouse_emails:
         sent = _send_email(f"Northline shipping manifest — {n} {plural} ready to ship",
                            body, [], recipients=settings.warehouse_emails)
