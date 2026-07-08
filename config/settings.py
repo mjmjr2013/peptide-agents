@@ -84,6 +84,11 @@ class Settings:
         n.strip() for n in os.environ.get("OPERATOR_NUMBERS", "").split(",") if n.strip()
     ]
 
+    # Cost guardrail — max Claude-generated replies per prospect per day (China day).
+    # A real buyer closing an order uses 10–30 messages; past the cap Lily sends a
+    # canned time-aware excuse (no Claude call) and ops get an alert email.
+    agent_daily_msg_cap: int = int(os.environ.get("AGENT_DAILY_MSG_CAP", "50"))
+
     # Business
     company_name: str = os.environ.get("COMPANY_NAME", "PeptideCo")
 

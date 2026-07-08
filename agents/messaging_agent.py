@@ -454,8 +454,21 @@ def _shipping_fee(shipping: str, product_subtotal: float) -> int:
     return 95
 
 
+# Cost guardrail: the whole history is re-sent to Claude on every reply, so an
+# endlessly chatty prospect makes each message pricier than the last. Bound it.
+# (Matches the ~30-row redeploy rebuild in handle_inbound — Lily keeps recent
+# context; the full transcript stays in Airtable.)
+_MAX_HISTORY = 40
+
+
 def get_conversation(phone: str) -> list[dict]:
-    return _conversations.get(phone, [])
+    conv = _conversations.get(phone, [])
+    if len(conv) > _MAX_HISTORY:
+        conv = conv[-_MAX_HISTORY:]
+        while conv and conv[0].get("role") != "user":  # API needs a user turn first
+            conv = conv[1:]
+        _conversations[phone] = conv
+    return conv
 
 
 def save_conversation(phone: str, messages: list[dict]):
@@ -1275,6 +1288,66 @@ def send_vial_photo_to_customer(phone: str, media_url: str, name: str = "") -> b
         return False
 
 
+# Cost guardrail: cap paid Claude replies per prospect per day. A troll chatting
+# with Lily all day would otherwise run an open-ended Anthropic bill (auto-reload
+# would keep feeding it). Past the cap Lily sends a canned, time-aware excuse —
+# "it's very late here" only when it actually IS late in China (persona lives in
+# HK), a busy-day excuse otherwise — with NO Claude call, and ops get one alert
+# email per phone per day. Real buyers close an order in 10–30 messages and never
+# see this. Day boundary = China midnight, matching "tomorrow" in the night line.
+from zoneinfo import ZoneInfo
+
+_CHINA_TZ = ZoneInfo("Asia/Hong_Kong")
+_daily_counts: dict[str, dict] = {}  # phone -> {"day", "n", "alerted"}
+
+_CAP_NIGHT_REPLIES = [
+    "So sorry dear, it is very late here now and I must sleep soon 😊 I will reply to "
+    "you tomorrow when I am back, okay? Rest well! 🙏",
+    "Dear, it is almost midnight here! 🌙 Let me continue with you tomorrow when I am "
+    "fresh — I don't want to give you wrong information when I am sleepy 😊",
+]
+_CAP_DAY_REPLIES = [
+    "So sorry dear, it is very busy at the warehouse today! 🙏 I will come back to you "
+    "as soon as I am free, okay? Thank you for your patience 😊",
+    "Dear, please give me a little time — many customers today! 😊 I will message you "
+    "as soon as I can, I promise 🙏",
+]
+
+
+def _over_daily_cap(phone: str) -> bool:
+    """Count this inbound; True once the prospect exceeds today's reply cap."""
+    day = datetime.now(_CHINA_TZ).strftime("%Y-%m-%d")
+    rec = _daily_counts.get(phone)
+    if not rec or rec["day"] != day:
+        rec = {"day": day, "n": 0, "alerted": False}
+        _daily_counts[phone] = rec
+    rec["n"] += 1
+    if rec["n"] <= settings.agent_daily_msg_cap:
+        return False
+    if not rec["alerted"]:
+        rec["alerted"] = True
+        try:
+            from agents.weekly_report import _send_email
+            _send_email(f"NOTICE: prospect {phone} hit the daily message cap",
+                        f"{phone} sent {rec['n']} messages today (cap "
+                        f"{settings.agent_daily_msg_cap}). They are now getting canned "
+                        f"'I'm busy/asleep, dear' replies instead of Claude-generated ones, "
+                        f"so they cost ~nothing. The cap resets at midnight China time.\n\n"
+                        f"If this is a legitimate big customer, just wait for the reset or "
+                        f"raise AGENT_DAILY_MSG_CAP in Railway. If it's abuse, block the "
+                        f"number in the Twilio console (Messaging → Settings → deny list).", [])
+        except Exception as e:
+            print(f"[Cap] alert email failed: {e!r}")
+    return True
+
+
+def _cap_reply() -> str:
+    """A canned Lily excuse that matches the actual time of day in China."""
+    hour = datetime.now(_CHINA_TZ).hour
+    pool = _CAP_NIGHT_REPLIES if (hour >= 22 or hour < 7) else _CAP_DAY_REPLIES
+    return secrets.choice(pool)
+
+
 # If the brain is unreachable (Anthropic API outage / exhausted credits / any bug),
 # the customer still gets a warm human answer instead of silence, and we return 200
 # so Twilio doesn't retry and double-log the inbound. Ops get an emailed alert at
@@ -1319,13 +1392,18 @@ def twilio_webhook_handler(form_data: dict) -> str:
     # and each ping MUST get an answer — silencing repeats made the agent look like it
     # ghosted (and, to a paying customer, like a scam).
     with _lock_for(from_phone):
-        try:
-            reply = handle_inbound(from_phone, body, name=profile_name)
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            _alert_outage(repr(e))
-            reply = secrets.choice(_FALLBACK_REPLIES)
+        # Daily cost cap (skip for RESET and operator control messages)
+        if (body.strip().upper() != "RESET" and not _is_operator(from_phone)
+                and _over_daily_cap(from_phone)):
+            reply = _cap_reply()
+        else:
+            try:
+                reply = handle_inbound(from_phone, body, name=profile_name)
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                _alert_outage(repr(e))
+                reply = secrets.choice(_FALLBACK_REPLIES)
 
     if reply:
         airtable.log_message(from_phone, "outbound", reply)

@@ -299,3 +299,19 @@ a link and completes each order on a simple web page — enter the **tracking nu
 - **Auto-send on save/upload** was Jordan's choice (vs. record-only). Both §16 stages ride this page.
 - Daily ping fires from `run_daily_manifest()` (§7) — the email now says how many orders need tracking
   vs. vial photos. Link: `https://peptide-agents-production.up.railway.app/manifest?token=<MANIFEST_TOKEN>`.
+
+## 19. Cost guardrails (LIVE)
+Protects the Anthropic bill from a prospect who chats forever without buying (auto-reload would
+otherwise fund it indefinitely). Two layers in `agents/messaging_agent.py`:
+- **Daily per-prospect reply cap** — `AGENT_DAILY_MSG_CAP` (default 50; a real buyer closes in 10–30
+  messages). Past the cap, Lily sends a canned **time-aware** excuse with NO Claude call: a
+  "it's very late here, I'll reply tomorrow" line only when it actually IS night in China (22:00–07:00
+  Asia/Hong_Kong — the persona's home), otherwise a "very busy today" line; 2 variants each, rotated.
+  Ops get ONE alert email per phone per day (raise the cap for a legit whale, or block the number in
+  Twilio's deny list for abuse). Cap resets at China midnight (matches "tomorrow"). RESET and operator
+  messages don't count. Counter is in-memory (redeploy resets it — acceptable slack).
+- **History cap** — `get_conversation` trims to the last `_MAX_HISTORY=40` messages (first entry kept
+  a `user` turn for API role alternation), so per-message input cost stays bounded no matter how long
+  the thread; full transcript remains in Airtable.
+- Third layer (manual, console-only): a monthly **workspace spend limit** at console.anthropic.com —
+  the hard ceiling auto-reload cannot cross. Jordan to set (~$500/mo suggested at current volume).
