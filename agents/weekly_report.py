@@ -157,7 +157,10 @@ def run_daily_manifest() -> dict:
         f"{need_trk} need a tracking number" if need_trk else "",
         f"{need_pic} need a photo of the packed vials" if need_pic else ""] if x)
     body = (f"Northline: {n} {plural} to process — {todo}. Open the manifest sheet and "
-            f"complete each order:\n{link}")
+            f"complete each order:\n{link}\n\n"
+            f"IMPORTANT: Please do NOT reply to this email — replies are not read by anyone. "
+            f"Enter the tracking number AND upload the vial photo on the page above; the "
+            f"customer is notified automatically the moment you save.")
     if settings.warehouse_emails:
         sent = _send_email(f"Northline shipping manifest — {n} {plural} ready to ship",
                            body, [], recipients=settings.warehouse_emails)
