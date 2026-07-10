@@ -47,6 +47,12 @@ class Settings:
         e.strip() for e in os.environ.get("WAREHOUSE_EMAIL", "").split(",") if e.strip()
     ]
 
+    # CC'd on every daily manifest email to the warehouse (comma-separated) —
+    # so the team can see what the rep was asked to do.
+    manifest_cc: list[str] = [
+        e.strip() for e in os.environ.get("MANIFEST_CC", "").split(",") if e.strip()
+    ]
+
     # Warehouse WhatsApp — fallback transport for the daily manifest when
     # WAREHOUSE_EMAIL is unset. Use the whatsapp: scheme, e.g. "whatsapp:+8613418806654".
     warehouse_whatsapp: str = os.environ.get("WAREHOUSE_WHATSAPP", "")

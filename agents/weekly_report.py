@@ -67,7 +67,7 @@ def build_warehouse_manifest(orders: list[dict], label: str) -> bytes:
 
 
 def _send_email(subject: str, body: str, attachments: list[tuple[str, bytes]],
-                recipients: list[str] | None = None) -> bool:
+                recipients: list[str] | None = None, cc: list[str] | None = None) -> bool:
     recipients = recipients if recipients is not None else settings.report_emails
     if not (settings.gmail_user and settings.gmail_app_password and recipients):
         print("[reports] Gmail SMTP not configured (GMAIL_USER/GMAIL_APP_PASSWORD/recipients) — skipping email")
@@ -76,6 +76,8 @@ def _send_email(subject: str, body: str, attachments: list[tuple[str, bytes]],
     msg["Subject"] = subject
     msg["From"] = settings.gmail_user
     msg["To"] = ", ".join(recipients)
+    if cc:
+        msg["Cc"] = ", ".join(cc)  # send_message delivers to To + Cc
     msg.set_content(body)
     for name, data in attachments:
         maintype, subtype = _XLSX_CT.split("/", 1)
@@ -163,7 +165,8 @@ def run_daily_manifest() -> dict:
             f"customer is notified automatically the moment you save.")
     if settings.warehouse_emails:
         sent = _send_email(f"Northline shipping manifest — {n} {plural} ready to ship",
-                           body, [], recipients=settings.warehouse_emails)
+                           body, [], recipients=settings.warehouse_emails,
+                           cc=settings.manifest_cc)
         return {"pending": n, "sent": sent, "via": "email"}
     print("[reports] WAREHOUSE_EMAIL not set — falling back to WhatsApp for daily manifest")
     sent = _send_whatsapp([body])
