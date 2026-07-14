@@ -225,6 +225,18 @@ stage (tracking-number stage shipped as §18).
 - Railway auto-deploy unreliable → force-deploy by explicit commit SHA and poll.
 - Railway GraphQL is behind Cloudflare → requests with a default urllib User-Agent get **403 error 1010**.
   Send a browser-like `User-Agent` header on every Railway API call.
+- **WhatsApp 24-hour window**: Meta silently drops freeform business messages sent >24h after the
+  customer's LAST inbound (Twilio accepts them, then async `undelivered` error 63016 — code sees
+  "success"). Vial photos (sent 1–2 weeks post-purchase) ALWAYS hit this; tracking often does.
+  Fix (LIVE): approved utility templates via Twilio Content API — `northline_order_shipped`
+  (HX8015be3eb4147531f1a7be20c00544e6) + `northline_vials_ready` (media,
+  HXdd2db9caae789a8b39f8137e0c64646c), SIDs in Railway as `TRACKING_CONTENT_SID`/`VIAL_CONTENT_SID`.
+  `send_tracking_to_customer`/`send_vial_photo_to_customer` check `_whatsapp_window_open()` (last
+  inbound in Airtable transcript <23.5h) and auto-switch to the template when closed. Templates cost
+  a few cents (Meta utility fee). Check approval: GET content.twilio.com/v1/Content/<sid>/ApprovalRequests.
+- Local `~/peptide-agents/.env` can be STALE vs Railway (it once had the old US number as
+  `TWILIO_WHATSAPP_FROM` — a local send silently used the wrong sender → 63016). Railway is the
+  source of truth for env values; verify before local sends that touch customers.
 - Twilio inbound media URLs (`MediaUrl0`, on api.twilio.com) require account auth → they are NOT directly
   re-sendable as a `media_url` to a customer. To relay an image, re-host it at a public URL first
   (e.g. upload to an Airtable attachment field, which returns a public URL Twilio can fetch).

@@ -8,7 +8,7 @@ import math
 import re
 import time
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from twilio.rest import Client as TwilioClient
 from twilio.twiml.messaging_response import MessagingResponse
@@ -1247,8 +1247,27 @@ def send_sms(to: str, body: str):
     return msg.sid
 
 
+def _whatsapp_window_open(phone: str) -> bool:
+    """True if the customer messaged us within ~24h — WhatsApp only delivers
+    freeform business messages inside that window (error 63016 outside it).
+    Judged from the durable Airtable transcript; on any doubt, assume CLOSED
+    (the approved template is always deliverable, freeform is not)."""
+    try:
+        rows = airtable.get_recent_messages_for_phone(phone, limit=30)
+        last_in = next((r["fields"].get("sent_at") for r in reversed(rows)
+                        if r["fields"].get("direction") == "inbound"), None)
+        if not last_in:
+            return False
+        dt = datetime.fromisoformat(last_in.replace("Z", "+00:00"))
+        return datetime.now(timezone.utc) - dt < timedelta(hours=23, minutes=30)
+    except Exception as e:
+        print(f"[Window] check failed for {phone}: {e!r} — assuming closed")
+        return False
+
+
 def send_tracking_to_customer(phone: str, tracking: str, name: str = "") -> bool:
     """Text a customer their shipping tracking number in Lily's voice (WhatsApp).
+    Uses the approved WhatsApp template when their 24h session window is closed.
     Returns True if sent. Best-effort — logs and returns False on failure."""
     if not phone or not tracking:
         return False
@@ -1258,7 +1277,14 @@ def send_tracking_to_customer(phone: str, tracking: str, name: str = "") -> bool
             f"*{tracking.strip()}*. It may take a little time to show movement. Thank you so much "
             f"for your order, dear — message me anytime if you need anything! 😊")
     try:
-        msg = twilio_client.messages.create(body=body, from_=from_number, to=phone)
+        if _whatsapp_window_open(phone) or not settings.tracking_content_sid:
+            msg = twilio_client.messages.create(body=body, from_=from_number, to=phone)
+        else:
+            msg = twilio_client.messages.create(
+                content_sid=settings.tracking_content_sid,
+                content_variables=json.dumps({"1": tracking.strip()}),
+                from_=from_number, to=phone)
+            body = f"[template] Your order has shipped. Tracking: {tracking.strip()}"
         airtable.log_message(phone, "outbound", body)  # transcript
         print(f"[Tracking] Sent tracking to {phone}: SID={msg.sid}")
         return True
@@ -1269,6 +1295,7 @@ def send_tracking_to_customer(phone: str, tracking: str, name: str = "") -> bool
 
 def send_vial_photo_to_customer(phone: str, media_url: str, name: str = "") -> bool:
     """WhatsApp a customer the photo of their packed vials in Lily's voice.
+    Uses the approved WhatsApp media template when their 24h window is closed.
     Returns True if sent. Best-effort — logs and returns False on failure."""
     if not phone or not media_url:
         return False
@@ -1278,9 +1305,16 @@ def send_vial_photo_to_customer(phone: str, media_url: str, name: str = "") -> b
             f"before they ship. Everything is prepared with care. Thank you again for your "
             f"order, dear! 🙏")
     try:
-        msg = twilio_client.messages.create(body=body, from_=from_number, to=phone,
-                                            media_url=[media_url])
-        airtable.log_message(phone, "outbound", body + " [sent vial photo]")  # transcript
+        if _whatsapp_window_open(phone) or not settings.vial_content_sid:
+            msg = twilio_client.messages.create(body=body, from_=from_number, to=phone,
+                                                media_url=[media_url])
+            airtable.log_message(phone, "outbound", body + " [sent vial photo]")
+        else:
+            msg = twilio_client.messages.create(
+                content_sid=settings.vial_content_sid,
+                content_variables=json.dumps({"1": media_url}),
+                from_=from_number, to=phone)
+            airtable.log_message(phone, "outbound", "[template] vial photo sent")
         print(f"[VialPhoto] Sent vial photo to {phone}: SID={msg.sid}")
         return True
     except Exception as e:

@@ -90,6 +90,13 @@ class Settings:
         n.strip() for n in os.environ.get("OPERATOR_NUMBERS", "").split(",") if n.strip()
     ]
 
+    # WhatsApp approved message templates (Twilio Content SIDs). WhatsApp blocks
+    # freeform business messages sent >24h after the customer's last message
+    # (error 63016) — these pre-approved templates are the official mechanism for
+    # business-initiated notices like tracking numbers and vial photos.
+    tracking_content_sid: str = os.environ.get("TRACKING_CONTENT_SID", "")
+    vial_content_sid: str = os.environ.get("VIAL_CONTENT_SID", "")
+
     # Cost guardrail — max Claude-generated replies per prospect per day (China day).
     # A real buyer closing an order uses 10–30 messages; past the cap Lily sends a
     # canned time-aware excuse (no Claude call) and ops get an alert email.
