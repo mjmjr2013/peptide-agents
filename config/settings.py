@@ -96,6 +96,7 @@ class Settings:
     # business-initiated notices like tracking numbers and vial photos.
     tracking_content_sid: str = os.environ.get("TRACKING_CONTENT_SID", "")
     vial_content_sid: str = os.environ.get("VIAL_CONTENT_SID", "")
+    payment_content_sid: str = os.environ.get("PAYMENT_CONTENT_SID", "")
 
     # Cost guardrail — max Claude-generated replies per prospect per day (China day).
     # A real buyer closing an order uses 10–30 messages; past the cap Lily sends a

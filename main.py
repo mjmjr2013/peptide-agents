@@ -72,6 +72,11 @@ def run_report_scheduler():
             if last_balance_day != day:
                 check_twilio_balance()
                 last_balance_day = day
+            # Payments: proactive on-chain check of awaiting orders (every 5-min tick)
+            from agents.payment_watcher import check_awaiting_payments
+            pw = check_awaiting_payments()
+            if pw.get("paid"):
+                print(f"[Main/PayWatch] {pw}")
             # QA: transcript reviewer — every REVIEW_INTERVAL_HOURS (see transcript_reviewer.py)
             if time.time() - last_review_ts >= review_every:
                 from agents.transcript_reviewer import run_transcript_review
