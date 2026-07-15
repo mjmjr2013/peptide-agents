@@ -821,8 +821,18 @@ def handle_inbound(from_phone: str, body: str, name: str = "") -> str:
             def _verify_later(phone=from_phone, pend=pend):
                 time.sleep(40)  # the human "checking with finance" beat
                 try:
+                    # Other awaiting orders' unique amounts (same coin) — an overpaid tx
+                    # must never be claimable by the wrong order.
+                    try:
+                        others = [float(o["fields"].get("expected_amount") or 0)
+                                  for o in airtable.get_awaiting_orders()
+                                  if o["id"] != pend["order_id"]
+                                  and (o["fields"].get("coin") or "").upper() == pend["coin"].upper()]
+                    except Exception:
+                        others = []
                     res = crypto_verify.verify_payment(pend["coin"], _wallet_address(pend["coin"]),
-                                                       pend["expected"], pend["since"])
+                                                       pend["expected"], pend["since"],
+                                                       other_amounts=others)
                     if res:
                         try:
                             airtable.mark_order_paid(pend["order_id"], res.get("tx_hash", ""), _now_iso())

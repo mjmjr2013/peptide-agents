@@ -70,7 +70,12 @@ While waiting for confirmation, the agent replies with **varied, reassuring, coi
   NOTE: ERC-20 gas is paid by the customer (~$3–25). Solana (~$0.0005) and Tron (~$1) verifiers were
   also built earlier and are in git history if you want to switch back — Solana/Tron are far cheaper for buyers.
 - **BTC**, verified via **mempool.space** (no key); USD→BTC rate locked at quote (`usd_to_btc`), 1 confirmation.
-- Matching is by **unique amount** (USDT exact; BTC quoted amount + ~1.5% tolerance). All tested against live chains.
+- Matching is by **unique amount** — with bounded OVERPAY acceptance (2026-07-15 fix): USDT matches
+  from −0.005 to +$5 over expected; BTC from −1.5% to +5%. Underpayment is never accepted. A tx that
+  exactly matches ANOTHER awaiting order's unique amount is skipped (`other_amounts` guard, fed from
+  `get_awaiting_orders` at the call site) so overpay can't cross-claim. Added after a real customer
+  sent 279.2376 USDT for a 279.01 order (exchanges round up / senders pad for fees) and the
+  exact-only matcher left them stranded on "finance doesn't see it yet".
 
 ## 6. Airtable data model (system of record)
 Base `apprMJI8obXHOLvJU`. Tables: Leads, Campaigns, Labs, **Orders**, **Order Items**, **Messages**.
