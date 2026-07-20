@@ -345,3 +345,20 @@ Emails `REPORT_EMAIL` a per-thread issue list with severities ONLY when somethin
 (subject counts HIGH issues); clean runs just log. Cost ≈ one small Claude call per active thread
 per run. Manual run: `python -m agents.transcript_reviewer [lookback_hours]`.
 First live run correctly flagged the 2026-07-08 outage thread (customer ignored — HIGH).
+
+## 21. Infrastructure incidents & upgrades (2026-07-20) — READ THIS
+Two silent platform failures were found stacked on the same day:
+- **Railway Hobby blocked ALL outbound SMTP** (`OSError 101`) — prod had NEVER successfully sent an
+  email: every scheduled manifest, both weekly supplier bulks (Jul 5 + Jul 19), and every health/QA
+  alert failed silently. Every email that ever arrived was sent manually from the laptop. **Fixed by
+  upgrading Railway to Pro** — verified same day via `GET /admin/email-test?token=<MANIFEST_TOKEN>`
+  (token-guarded prod endpoint; also `GET /admin/run-manifest?token=…` triggers a real manifest).
+- **Airtable free-plan monthly API quota (1,000 calls) exhausted** (`PUBLIC_API_BILLING_LIMIT_EXCEEDED`,
+  mostly payment-watcher polling) — data layer hard-down: orders couldn't be recorded, transcripts
+  didn't log. **Fixed by upgrading Airtable to Team** (per-workspace! the base must live in the
+  upgraded workspace). Watcher cadence halved to ~10 min; daily Airtable probe added to the health
+  monitor (§7) — no usage-% API exists, so it alarms on hard failure.
+- The missed supplier bulks were caught up manually 2026-07-20 (email to REPORT_EMAIL: 1 kit bac
+  water + 2 kits reta = 3 kits); both orders marked bulk_ordered; books consistent.
+- Weekly bulk now marks orders ONLY after a successful email send (was: marked regardless — how the
+  Jul 5 and Jul 19 sends vanished without a trace).
