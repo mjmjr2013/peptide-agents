@@ -1283,9 +1283,10 @@ def send_tracking_to_customer(phone: str, tracking: str, name: str = "") -> bool
         return False
     from_number = settings.twilio_whatsapp_from if "whatsapp" in phone else settings.twilio_phone_number
     dear = f"{name}, " if name else ""
-    body = (f"Wonderful news, {dear}dear! 🎉 Your order has shipped. Your tracking number is "
-            f"*{tracking.strip()}*. It may take a little time to show movement. Thank you so much "
-            f"for your order, dear — message me anytime if you need anything! 😊")
+    body = (f"Wonderful news, {dear}dear! 🎉 Your shipment is booked and your tracking number is "
+            f"*{tracking.strip()}*. It will show movement once the carrier scans it in — I will "
+            f"also send you a photo of your vials before they go out. Thank you so much for your "
+            f"order, dear — message me anytime! 😊")
     try:
         if _whatsapp_window_open(phone) or not settings.tracking_content_sid:
             msg = twilio_client.messages.create(body=body, from_=from_number, to=phone)

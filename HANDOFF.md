@@ -317,6 +317,18 @@ a link and completes each order on a simple web page — enter the **tracking nu
 - Daily ping fires from `run_daily_manifest()` (§7) — the email now says how many orders need tracking
   vs. vial photos. Link: `https://peptide-agents-production.up.railway.app/manifest?token=<MANIFEST_TOKEN>`.
 
+## 18a. Fulfillment status lifecycle (2026-07-20 semantics)
+`fulfillment_status` (informational; automation runs on the checkboxes) advances FORWARD ONLY
+(`_advance_fulfillment`, rank recorded<in_bulk_order<labeled<shipped — stages can interleave):
+- `recorded` — order created (payment instructions sent)
+- `in_bulk_order` — included in a successful weekly supplier bulk email
+- `labeled` — tracking entered on the manifest page. BUSINESS INTENT: warehouse creates tracking
+  FAST (possibly before inventory arrives) as a trust signal; customer message says "shipment is
+  booked", NOT "shipped" (freeform reworded; template `northline_tracking_booked`
+  HX562f612553f60b54cf12ed9feaa586f8 submitted — swap `TRACKING_CONTENT_SID` to it once approved,
+  old "has shipped" template stays active until then)
+- `shipped` — vial photo (with client name/address visible) sent right before actual dispatch
+
 ## 19. Cost guardrails (LIVE)
 Protects the Anthropic bill from a prospect who chats forever without buying (auto-reload would
 otherwise fund it indefinitely). Two layers in `agents/messaging_agent.py`:

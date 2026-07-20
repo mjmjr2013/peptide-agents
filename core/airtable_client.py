@@ -223,14 +223,30 @@ class AirtableClient:
         """Paid orders the warehouse still has to enter a tracking number for."""
         return self.orders.all(formula="AND({payment_status}='paid',NOT({tracking_sent}))")
 
+    # Fulfillment lifecycle: recorded → in_bulk_order → labeled → shipped.
+    # Stages can interleave (tracking may precede the weekly bulk; the vial photo
+    # may precede tracking), so status only ever advances — never regresses.
+    _FULFILLMENT_RANK = {"recorded": 0, "in_bulk_order": 1, "labeled": 2, "shipped": 3}
+
+    def _advance_fulfillment(self, order_id: str, new_status: str, extra: dict) -> dict:
+        fields = dict(extra)
+        try:
+            cur = self.get_order(order_id)["fields"].get("fulfillment_status", "recorded")
+            if self._FULFILLMENT_RANK.get(new_status, 0) > self._FULFILLMENT_RANK.get(cur, 0):
+                fields["fulfillment_status"] = new_status
+        except Exception:
+            fields["fulfillment_status"] = new_status  # best effort
+        return self.orders.update(order_id, fields)
+
     def set_order_tracking(self, order_id: str, tracking_number: str) -> dict:
-        """Record a tracking number and mark the order shipped/tracked.
-        NOTE: fulfillment_status is a single-select — 'shipped' is an existing option
-        (Airtable rejects the whole update if you pass an unknown option value)."""
-        return self.orders.update(order_id, {
+        """Record a tracking number → status 'labeled'. Per the business flow the
+        warehouse creates the label FAST (possibly before inventory arrives) as a
+        trust signal; actual dispatch is the vial-photo stage ('shipped').
+        NOTE: fulfillment_status is a single-select — only pass existing options
+        (Airtable rejects the whole update on an unknown option value)."""
+        return self._advance_fulfillment(order_id, "labeled", {
             "tracking_number": tracking_number.strip(),
             "tracking_sent": True,
-            "fulfillment_status": "shipped",
         })
 
     def get_orders_needing_fulfillment(self) -> list[dict]:
@@ -250,7 +266,8 @@ class AirtableClient:
         return atts[-1]["url"] if atts else ""
 
     def mark_vial_photo_sent(self, order_id: str) -> dict:
-        return self.orders.update(order_id, {"vial_photo_sent": True})
+        """Vial photo sent = final step right before physical dispatch → 'shipped'."""
+        return self._advance_fulfillment(order_id, "shipped", {"vial_photo_sent": True})
 
     def get_recent_messages_for_phone(self, phone: str, limit: int = 30) -> list[dict]:
         """Chronological transcript rows for one prospect (for conversation rebuild
@@ -288,7 +305,7 @@ class AirtableClient:
     def mark_bulk_ordered(self, order_ids: list[str]) -> None:
         for oid in order_ids:
             try:
-                self.orders.update(oid, {"bulk_ordered": True, "fulfillment_status": "in_bulk_order"})
+                self._advance_fulfillment(oid, "in_bulk_order", {"bulk_ordered": True})
             except Exception as e:
                 print(f"[airtable] mark_bulk_ordered {oid} failed: {e}")
 
