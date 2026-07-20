@@ -188,7 +188,13 @@ def run_supplier_bulk() -> dict:
             f"Attached: supplier_bulk_{airtable.week_tag()}.xlsx (aggregate quantities only).")
     emailed = _send_email(f"Northline supplier bulk order — {label}", body,
                           [(f"supplier_bulk_{airtable.week_tag()}.xlsx", data)])
-    airtable.mark_bulk_ordered([o["id"] for o in orders])
+    if emailed:
+        airtable.mark_bulk_ordered([o["id"] for o in orders])
+    else:
+        # Leave orders unmarked so next Sunday's run retries them. (The 2026-07-05
+        # run emailed nothing but marked the order anyway — it fell through the
+        # cracks until someone asked where the bulk order was.)
+        print("[reports] supplier bulk email FAILED — orders left unmarked for retry")
     return {"bulk_orders": len(orders), "kits": kits, "emailed": emailed}
 
 

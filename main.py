@@ -54,6 +54,7 @@ def run_report_scheduler():
     last_balance_day = None
     review_every = float(os.environ.get("REVIEW_INTERVAL_HOURS", "6")) * 3600
     last_review_ts = time.time()  # first review one interval after boot
+    last_paywatch_ts = 0.0
     while True:
         try:
             now = datetime.now(tz)
@@ -72,11 +73,15 @@ def run_report_scheduler():
             if last_balance_day != day:
                 check_twilio_balance()
                 last_balance_day = day
-            # Payments: proactive on-chain check of awaiting orders (every 5-min tick)
-            from agents.payment_watcher import check_awaiting_payments
-            pw = check_awaiting_payments()
-            if pw.get("paid"):
-                print(f"[Main/PayWatch] {pw}")
+            # Payments: proactive on-chain check of awaiting orders. Every OTHER
+            # tick (~10 min) — each cycle costs Airtable API calls, which are a
+            # metered monthly quota (the 5-min cadence drained the free plan).
+            if time.time() - last_paywatch_ts >= 600:
+                from agents.payment_watcher import check_awaiting_payments
+                pw = check_awaiting_payments()
+                last_paywatch_ts = time.time()
+                if pw.get("paid"):
+                    print(f"[Main/PayWatch] {pw}")
             # QA: transcript reviewer — every REVIEW_INTERVAL_HOURS (see transcript_reviewer.py)
             if time.time() - last_review_ts >= review_every:
                 from agents.transcript_reviewer import run_transcript_review
