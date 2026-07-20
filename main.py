@@ -72,6 +72,8 @@ def run_report_scheduler():
                 last_canary_hour = hour
             if last_balance_day != day:
                 check_twilio_balance()
+                from agents.health_monitor import check_airtable
+                check_airtable()
                 last_balance_day = day
             # Payments: proactive on-chain check of awaiting orders. Every OTHER
             # tick (~10 min) — each cycle costs Airtable API calls, which are a
@@ -391,6 +393,29 @@ Each is sent to the customer right away.</div>
                 print(f"[Manifest] vial photo failed for {order_id}: {e!r}")
                 return redirect(f"/manifest?token={quote(settings.manifest_token)}")
             return redirect(f"/manifest?token={quote(settings.manifest_token)}&photo={quote(ref)}")
+
+        @app.route("/admin/email-test")
+        def admin_email_test():
+            """Send a test email FROM THIS SERVER — proves outbound SMTP works in
+            prod (Railway blocks SMTP on Hobby; Pro unblocks). Token-guarded."""
+            from flask import request, abort
+            if not _manifest_authorized(request):
+                abort(403)
+            from agents.weekly_report import _send_email
+            ok = _send_email("Northline PROD email test",
+                            "This email was sent from the production server on Railway. "
+                            "If you are reading it, outbound SMTP works in prod.", [])
+            return {"emailed": ok}, 200
+
+        @app.route("/admin/run-manifest")
+        def admin_run_manifest():
+            """Trigger the daily warehouse manifest immediately (same code the
+            scheduler runs at DAILY_MANIFEST_HOUR). Token-guarded."""
+            from flask import request, abort
+            if not _manifest_authorized(request):
+                abort(403)
+            from agents.weekly_report import run_daily_manifest
+            return run_daily_manifest(), 200
 
         @app.route("/health")
         def health():

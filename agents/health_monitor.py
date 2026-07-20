@@ -62,6 +62,32 @@ def check_claude() -> bool:
     return True
 
 
+def check_airtable() -> bool:
+    """Daily probe of the data layer. Airtable's monthly API quota fails HARD when
+    exhausted (every order/logging call 429s) — alert ops the day it happens, not
+    when a customer order silently fails to record. (No usage-percent API exists,
+    so this is a hard-failure alarm, not an early warning.)"""
+    import requests as _rq
+    try:
+        r = _rq.get(f"https://api.airtable.com/v0/{settings.airtable_base_id}/Orders",
+                    params={"maxRecords": 1},
+                    headers={"Authorization": f"Bearer {settings.airtable_api_key}"},
+                    timeout=20)
+        if r.status_code == 200:
+            return True
+        body = r.text[:300]
+        print(f"[Health] Airtable probe: HTTP {r.status_code} {body}")
+        _email("ALERT: Airtable data layer failing",
+               f"The daily Airtable probe got HTTP {r.status_code}:\n\n{body}\n\n"
+               f"If this mentions BILLING_LIMIT, the monthly API quota is exhausted — "
+               f"orders CANNOT be recorded until the plan is upgraded or usage resets. "
+               f"Check usage: airtable.com → workspace settings.")
+        return False
+    except Exception as e:
+        print(f"[Health] Airtable probe failed: {e!r}")
+        return False
+
+
 def check_twilio_balance() -> float | None:
     """Daily WhatsApp-money check. Returns the balance, or None on failure."""
     threshold = float(os.environ.get("TWILIO_BALANCE_ALERT_USD", "25"))
