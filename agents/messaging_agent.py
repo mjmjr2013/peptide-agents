@@ -310,6 +310,13 @@ THINK BEFORE YOU REPLY:
 - "reply_message" must read like a real human typed it — natural, warm, never a canned or
   duplicated line. If your reply would be nearly identical to something you already said, change it.
 
+AFTER PAYMENT INSTRUCTIONS WERE SENT: the customer may still negotiate, ask questions, or
+change the order before paying — handle it normally. Discount rules stay the same (never
+beyond your cap; hold firm warmly). If you agree on a CHANGED order or total, use action
+"place" again — the system voids the old payment instructions and sends fresh ones with the
+new amount. If nothing changes, remind them warmly of the existing total and that you're
+ready when they are; do NOT invent new amounts in text without action "place".
+
 Always end with a JSON block (fill "thinking" FIRST, then the rest):
 {{
   "thinking": "private reasoning — never shown to the customer",
@@ -685,6 +692,31 @@ def _is_price_list_request(body: str) -> bool:
     return normalized in _PRICE_LIST_PHRASES
 
 
+def _is_payment_ping(body: str) -> bool:
+    """While awaiting payment: is this message about the payment itself, or is the
+    customer still negotiating / asking something else? Tiny Claude classification;
+    on any doubt or error, treat as a payment ping (the old, safe behavior)."""
+    text = (body or "").strip()
+    if not text:
+        return True
+    try:
+        r = claude.create(
+            system=("A customer was just given crypto payment instructions for their order. "
+                    "Classify their next message. Reply with exactly one word:\n"
+                    "PAYMENT — the message is about the payment itself: they sent it or are "
+                    "about to, they ask you to check/verify/confirm it, they report trouble "
+                    "sending, or they ask for the wallet address or exact amount again.\n"
+                    "OTHER — anything else: price negotiation or discount requests, changing "
+                    "or cancelling the order, product or shipping questions, small talk."),
+            messages=[{"role": "user", "content": text}],
+            max_tokens=64)
+        out = _extract_text(r).strip().upper()
+        return not out.startswith("OTHER")
+    except Exception as e:
+        print(f"[MessagingAgent] payment-ping classify failed: {e!r} — assuming payment")
+        return True
+
+
 def handle_inbound(from_phone: str, body: str, name: str = "") -> str:
     print(f"[MessagingAgent] Inbound from {from_phone}: {body!r}")
 
@@ -809,11 +841,28 @@ def handle_inbound(from_phone: str, body: str, name: str = "") -> str:
     # Per Daniel: on the customer's "I paid" ping, reply IMMEDIATELY with a human
     # "let me verify with the finance department" beat, then verify on-chain in the
     # background and send the result proactively ~30–60s later.
+    # BUT read the message first: a customer who got payment instructions may still
+    # be negotiating ("can you do $250?"), asking questions, or changing the order —
+    # blindly running the verify loop on those made Lily deaf to a live customer
+    # (2026-08-01 incident: 4 discount asks all answered with "checking with finance").
     if stage == "awaiting_payment":
-        conversation.append({"role": "user", "content": body})
         pend = _pending_payments.get(from_phone)
+        if pend and not _is_payment_ping(body):
+            # Not about the payment — let Lily actually read and answer it. Stage
+            # stays awaiting_payment (a real payment ping later still verifies);
+            # if they renegotiate, a fresh 'place' supersedes the old order.
+            conversation.append({"role": "user", "content": body})
+            reply = _handle_ordering(from_phone, conversation,
+                                     airtable.find_lead_by_phone(from_phone))
+            if reply == _MEDIA_SENT:
+                return ""
+            conversation.append({"role": "assistant", "content": reply})
+            save_conversation(from_phone, conversation)
+            return reply
+        conversation.append({"role": "user", "content": body})
         if not pend:
             set_stage(from_phone, "ordering")
+            conversation.pop()  # main path below appends the user turn itself
         elif not pend.get("verifying"):
             pend["verifying"] = True
             save_conversation(from_phone, conversation)
@@ -1084,6 +1133,18 @@ def _handle_ordering(phone: str, conversation: list[dict], existing_lead: dict |
                               + ", ".join(f"{i['kits']}x {i['product']} {i['spec']}".strip() for i in items))
             return ("Thank you, dear! Let me confirm the payment details with my team and "
                     "send them to you in just a moment.")
+
+        # Supersede any previous unpaid order for this customer (renegotiation /
+        # changed mind after instructions went out): mark it failed so its unique
+        # amount can't be matched and redeploy recovery can't resurrect it.
+        try:
+            prev = airtable.get_awaiting_order_for_phone(phone)
+            if prev:
+                airtable.orders.update(prev["id"], {"payment_status": "failed"})
+                print(f"[MessagingAgent] Superseded stale awaiting order "
+                      f"{prev['fields'].get('order_ref')} for {phone}")
+        except Exception as e:
+            print(f"[MessagingAgent] supersede check failed: {e!r}")
 
         charge_usd, expected = airtable.allocate_unique_amount(total_usd, coin)
         if coin == "BTC" and not expected:
