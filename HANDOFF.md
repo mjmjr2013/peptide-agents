@@ -329,6 +329,25 @@ a link and completes each order on a simple web page — enter the **tracking nu
   old "has shipped" template stays active until then)
 - `shipped` — vial photo (with client name/address visible) sent right before actual dispatch
 
+## 18b. Negotiation robustness (2026-08-01 incidents — both fixed)
+Two live failures with Daniel testing, same root pattern (state machine overriding conversation):
+1. **awaiting_payment deafness**: every message ran the verify-with-finance loop; 4 discount asks got
+   "checking with finance". FIX: `_is_payment_ping` Claude classifier — only "ALREADY sent / check it /
+   resend address-amount" verifies; everything else (negotiation, changes, "I WILL send") routes to the
+   normal ordering handler with stage preserved. Same fix applied to awaiting_address (non-address,
+   digit-free messages route to Lily instead of the canned re-ask).
+2. **Price-guard flip-flop**: Lily quoted $90/kit (5% off $95=$90.25 rounded naturally); the validator
+   CEIL'd the min to $91 and overrode her with an identical canned "$91/kit" line 6x ("STOP FLIP
+   FLOPPING"). FIX: (a) discount-cap minimum rounds DOWN to the human whole dollar (hard 3x-cost floor
+   still ceils); (b) a below-min quote regenerates through Claude with an INTERNAL note of true minimums
+   → one warm apology + corrected number, never a canned repeat; (c) re-`place` after renegotiation
+   SUPERSEDES the customer's previous awaiting order (marked `failed`) before allocating the new unique
+   amount, so stale amounts can't match and recovery can't resurrect them. Prompt now covers
+   post-instructions negotiation explicitly (re-place on any changed total; never state new totals
+   without action place).
+Verified by live simulation: negotiate $285→$275 → accept → place at $90/kit → supersede → fresh
+instructions.
+
 ## 19. Cost guardrails (LIVE)
 Protects the Anthropic bill from a prospect who chats forever without buying (auto-reload would
 otherwise fund it indefinitely). Two layers in `agents/messaging_agent.py`:
