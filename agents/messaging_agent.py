@@ -443,7 +443,12 @@ def _validate_line_items(line_items: list[dict]) -> tuple[list[dict], bool]:
             if unit <= 0:
                 unit = list_pk
             cap = max_discount_for_qty(kits)
-            min_pk = math.ceil(max(floor_pk or 0, list_pk * (1 - cap)))
+            # Discount bound rounds DOWN to the whole dollar Claude (and any human)
+            # naturally quotes: 5% off $95 = $90.25 → $90 is allowed. Rounding this
+            # UP made the validator fight Lily's own quoted price by $1 and loop a
+            # canned override at a customer (2026-08-01). Hard cost floor still
+            # rounds up — never sell below 3x cost.
+            min_pk = max(math.ceil(floor_pk or 0), math.floor(list_pk * (1 - cap)))
             if unit < min_pk - 0.001:
                 unit = float(min_pk)
                 clamped = True
@@ -703,11 +708,13 @@ def _is_payment_ping(body: str) -> bool:
         r = claude.create(
             system=("A customer was just given crypto payment instructions for their order. "
                     "Classify their next message. Reply with exactly one word:\n"
-                    "PAYMENT — the message is about the payment itself: they sent it or are "
-                    "about to, they ask you to check/verify/confirm it, they report trouble "
-                    "sending, or they ask for the wallet address or exact amount again.\n"
-                    "OTHER — anything else: price negotiation or discount requests, changing "
-                    "or cancelling the order, product or shipping questions, small talk."),
+                    "PAYMENT — they say they ALREADY sent the payment, ask you to check/verify/"
+                    "confirm it, report trouble completing it, or ask for the wallet address or "
+                    "exact amount again.\n"
+                    "OTHER — anything else: price negotiation or discount requests, changing or "
+                    "cancelling the order, saying they WILL send or are about to send (often after "
+                    "renegotiating — the deal may have changed), agreeing to a price, product or "
+                    "shipping questions, small talk."),
             messages=[{"role": "user", "content": text}],
             max_tokens=64)
         out = _extract_text(r).strip().upper()
@@ -936,6 +943,17 @@ def handle_inbound(from_phone: str, body: str, name: str = "") -> str:
         pend = _pending_payments.get(from_phone)
         addr = _parse_address(body)
         if not addr or not addr.get("address_line1") or not addr.get("city"):
+            # Not an address. If it reads like a question/comment (not an address
+            # attempt), let Lily actually answer it — same deafness fix as the
+            # awaiting_payment stage. Stage stays awaiting_address.
+            if not any(ch.isdigit() for ch in body):
+                reply = _handle_ordering(from_phone, conversation,
+                                         airtable.find_lead_by_phone(from_phone))
+                if reply == _MEDIA_SENT:
+                    return ""
+                conversation.append({"role": "assistant", "content": reply})
+                save_conversation(from_phone, conversation)
+                return reply
             reply = ("Sorry dear, I didn't catch the full address. Please send: full name, "
                      "street address, city, state/province, postal code, and country.")
             conversation.append({"role": "assistant", "content": reply})
@@ -1098,13 +1116,36 @@ def _handle_ordering(phone: str, conversation: list[dict], existing_lead: dict |
                          "boss. One moment — I come back to you quick.")
 
     # Pricing guardrail: never let a line price fall below the floor/cap minimum.
+    # When Claude quotes too low, do NOT override with a canned line (that looped
+    # a robotic contradiction at a live customer) — tell Claude its true minimums
+    # via an internal note and let it re-state the offer naturally, in-voice,
+    # consistent with what the customer has already been told.
     if action in ("place", "confirm"):
         items, clamped = _validate_line_items(line_items)
         if clamped and items:
+            mins = "; ".join(f"{i['product']} {i['spec']}: ${int(i['unit_price'])}/kit"
+                             for i in items)
+            print(f"[Guardrail] Below-minimum quote for {phone} — regenerating with correction")
+            note = (f"(INTERNAL SYSTEM NOTE — not from the customer, never mention it. The price "
+                    f"you proposed is below your true allowed minimum. Your ABSOLUTE per-kit "
+                    f"minimums for this order: {mins}. Recompute the total with these minimums. "
+                    f"If you already told the customer a lower number, apologize warmly for the "
+                    f"mix-up ONCE and give the corrected number clearly; do not flip-flop again. "
+                    f"Reply with action \"collect\" and a natural reply_message — do NOT place.)")
+            try:
+                r2 = claude.create(system=_build_order_prompt() + buyer_context,
+                                   messages=conversation + [{"role": "user", "content": note}],
+                                   max_tokens=2048)
+                p2 = _parse_json(_extract_text(r2)) or {}
+                fixed = (p2.get("reply_message") or "").strip()
+                if fixed:
+                    return fixed
+            except Exception as e:
+                print(f"[Guardrail] correction regen failed: {e!r}")
             quoted = "; ".join(f"{i['kits']}x {i['product']} {i['spec']}".strip() +
                                f" at ${int(i['unit_price'])}/kit" for i in items)
-            print(f"[Guardrail] Clamped below-floor quote for {phone}")
-            return f"Best I can do, dear: {quoted}. Okay for you?"
+            return (f"So sorry for the mix-up, dear! 🙏 The very best I can truly do is {quoted}. "
+                    f"Shall we go ahead?")
 
     # Finalize → create a pending order (awaiting payment) and send payment instructions
     if action == "place":
