@@ -941,6 +941,57 @@ def handle_inbound(from_phone: str, body: str, name: str = "") -> str:
     if stage == "awaiting_address":
         conversation.append({"role": "user", "content": body})
         pend = _pending_payments.get(from_phone)
+
+        def _reply_and_save(text):
+            conversation.append({"role": "assistant", "content": text})
+            save_conversation(from_phone, conversation)
+            return text
+
+        # Which order does this shipping info belong to? In-memory pointer first,
+        # durable Airtable fallback (paid order with no address) — never rely on
+        # memory alone: that's how a parsed address got silently discarded.
+        order_id = (pend or {}).get("order_id")
+        if not order_id:
+            try:
+                _po = airtable.get_paid_order_awaiting_address_for_phone(from_phone)
+                if _po:
+                    order_id = _po["id"]
+            except Exception as e:
+                print(f"[MessagingAgent] address order lookup failed: {e!r}")
+
+        # Follow-up turn: we already have the street address and are collecting the
+        # missing name and/or country.
+        need = (pend or {}).get("need_addr_fields")
+        if need:
+            fill = _parse_address(body)
+            updates = {}
+            for k in need:
+                v = (fill.get(k) or "").strip()
+                bare = body.strip()
+                if not v and k == "ship_name" and 0 < len(bare) <= 60 and not any(c.isdigit() for c in bare):
+                    v = bare  # e.g. they just replied "Lumex Health"
+                if not v and k == "country" and 0 < len(bare) <= 30:
+                    v = bare
+                if v:
+                    updates[k] = v
+            if updates and order_id:
+                try:
+                    airtable.set_order_shipping(order_id, **updates)
+                except Exception as e:
+                    print(f"[MessagingAgent] set_shipping (follow-up) failed: {e!r}")
+            still = [k for k in need if k not in updates]
+            if still:
+                pend["need_addr_fields"] = still
+                asks = {"ship_name": "the name we should put on the package",
+                        "country": "the country it ships to"}
+                return _reply_and_save("Almost done, dear! I just need " +
+                                       " and ".join(asks[k] for k in still) + " 😊")
+            _pending_payments.pop(from_phone, None)
+            set_stage(from_phone, "ordering")
+            return _reply_and_save(
+                "All set, dear! 🙏 Your order is confirmed. You will receive your tracking "
+                "number within 1-3 days. Thank you so much — message me anytime! 😊")
+
         addr = _parse_address(body)
         if not addr or not addr.get("address_line1") or not addr.get("city"):
             # Not an address. If it reads like a question/comment (not an address
@@ -954,25 +1005,39 @@ def handle_inbound(from_phone: str, body: str, name: str = "") -> str:
                 conversation.append({"role": "assistant", "content": reply})
                 save_conversation(from_phone, conversation)
                 return reply
-            reply = ("Sorry dear, I didn't catch the full address. Please send: full name, "
-                     "street address, city, state/province, postal code, and country.")
-            conversation.append({"role": "assistant", "content": reply})
-            save_conversation(from_phone, conversation)
-            return reply
-        if pend:
+            return _reply_and_save(
+                "Sorry dear, I didn't catch the full address. Please send: full name, "
+                "street address, city, state/province, postal code, and country.")
+
+        addr = {k: v for k, v in addr.items() if v}  # never blank out existing fields
+        if order_id:
             try:
-                airtable.set_order_shipping(pend["order_id"], **addr)
+                airtable.set_order_shipping(order_id, **addr)
             except Exception as e:
                 print(f"[MessagingAgent] set_shipping failed: {e!r}")
+        else:
+            print(f"[MessagingAgent] WARNING: no order found to attach address for {from_phone}")
+
+        # The warehouse cannot make a label without a recipient name and country —
+        # do NOT say "all set" until we have them.
+        missing = [k for k in ("ship_name", "country") if not addr.get(k)]
+        if missing:
+            if pend is None:
+                pend = _pending_payments.setdefault(from_phone, {})
+            pend["order_id"] = order_id
+            pend["need_addr_fields"] = missing
+            asks = {"ship_name": "what name should go on the package",
+                    "country": "which country it ships to"}
+            return _reply_and_save("Thank you, dear! 🙏 Almost done — just tell me " +
+                                   " and ".join(asks[k] for k in missing) + " 😊")
+
         _pending_payments.pop(from_phone, None)
         set_stage(from_phone, "ordering")
         who = addr.get("ship_name") or "you"
-        reply = (f"All set, dear! 🙏 Your order is confirmed and will ship to {who}. "
-                 f"You will receive your tracking number within 1-3 days from today. "
-                 f"Thank you so much — message me anytime if you need anything else!")
-        conversation.append({"role": "assistant", "content": reply})
-        save_conversation(from_phone, conversation)
-        return reply
+        return _reply_and_save(
+            f"All set, dear! 🙏 Your order is confirmed and will ship to {who}. "
+            f"You will receive your tracking number within 1-3 days from today. "
+            f"Thank you so much — message me anytime if you need anything else!")
 
     existing_lead = airtable.find_lead_by_phone(from_phone)
 

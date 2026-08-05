@@ -93,7 +93,15 @@ def check_awaiting_payments() -> dict:
         phone = airtable.get_lead_phone_for_order(o)
         if phone:
             set_stage(phone, "awaiting_address")
-            _pending_payments.pop(phone, None)
+            # Keep (don't pop!) the order pointer — the awaiting_address handler
+            # writes the customer's shipping details to pend["order_id"]. Popping
+            # it here made Lily parse Daniel's address, say "All set!", and write
+            # NOTHING (2026-08-02 incident).
+            _pending_payments[phone] = {
+                "order_id": o["id"], "coin": coin, "expected": expected,
+                "since": 0.0, "charge_usd": float(f.get("total_price") or 0),
+                "ref": f.get("order_ref", ""),
+            }
             _notify_paid(phone)
     return {"awaiting": len(awaiting), "paid": paid}
 
