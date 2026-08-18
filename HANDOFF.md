@@ -23,8 +23,8 @@ out **daily** (warehouse) and **weekly** (supplier). Ads drive prospects to the 
 ## 2. The live agent
 - The `peptide-agents` Flask app on **Railway**. Repo `mjmjr2013/peptide-agents` (branch `main`);
   local `~/peptide-agents`; URL `https://peptide-agents-production.up.railway.app`.
-- Runs in **webhook mode** in prod (Flask server + in-process schedulers; the ad/leadgen/tracking
-  background loops are not started in prod).
+- Runs in **webhook mode** in prod (Flask server + in-process schedulers; the ad/leadgen
+  background loops are not started in prod; the old tracking loop was deleted — see §22).
 - ⚠️ `~/Downloads/northline-agent` (Node) is **NOT live** — ignore it.
 
 ## 3. Phone numbers (all WhatsApp; SMS unused)
@@ -218,6 +218,8 @@ stage (tracking-number stage shipped as §18).
 **Other standing items:**
 - Twilio HK **regulatory bundle** = `pending-review` (WhatsApp unaffected; SMS/voice gated until approved).
 - Cleanups: delete the Railway token used this session; rotate the GitHub PAT; delete the Cloudflare API token.
+- **Delete the orphaned `status` column in the Airtable Orders table** (UI: right-click header → Delete
+  field) — code no longer reads/writes it but existing rows still display "Pending" (§22).
 
 ## 15. Gotchas (hard-won)
 - Consoles lie — verify via API (sender ONLINE w/ empty webhook silently drops inbound; bundle "submitted" while Draft).
@@ -393,3 +395,21 @@ Two silent platform failures were found stacked on the same day:
   water + 2 kits reta = 3 kits); both orders marked bulk_ordered; books consistent.
 - Weekly bulk now marks orders ONLY after a successful email send (was: marked regardless — how the
   Jul 5 and Jul 19 sends vanished without a trace).
+
+## 22. Orphaned `status` field + tracking_agent retired (2026-08-17, commit `9871dfb`)
+Jordan asked why Airtable showed orders as "pending". Root cause: the Orders table had a THIRD
+status field — bare **`status`** (choices Pending/Sent to lab/In production/Shipped/Delivered), a
+relic of the original single-item order model — that `create_pending_order` stamped `"Pending"` at
+creation and **nothing ever advanced**. All 4 live orders showed "Pending" regardless of their real
+`payment_status`/`fulfillment_status` (which remain the ONLY real lifecycle fields, §6/§18a).
+Fixes (all in `9871dfb`):
+- `create_pending_order` no longer writes `status` (new orders get no value there at all).
+- **Deleted `agents/tracking_agent.py`** — the pre-WhatsApp buyer-notification agent that polled
+  Orders by `status` and sent SMS + SendGrid email (both channels retired; wrong persona — not
+  Lily). It was never started in prod (webhook mode). Its manifest-page replacement (§16/§18) does
+  the whole job. Also removed its dead deps: `create_order`, `update_order`, `get_pending_orders`,
+  `get_orders_by_status` (airtable_client), `run_tracking_loop` + the `tracking` CLI mode (main.py),
+  and the `agents/__init__` exports. `get_order` kept (manifest page uses it).
+- The Airtable **field itself still exists** (API delete was blocked; irreversible-schema guard) —
+  delete it in the UI (§14 standing item). Until then old rows keep displaying the frozen "Pending".
+- Deployed via Railway auto-deploy (not SHA-verified — no Railway token that session; `/health` ok).
