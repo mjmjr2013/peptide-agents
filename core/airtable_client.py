@@ -97,27 +97,8 @@ class AirtableClient:
 
     # ── Orders ─────────────────────────────────────────────────────────────
 
-    def create_order(self, lead_id: str, product: str, quantity_mg: float,
-                     total_price: float) -> dict:
-        return self.orders.create({
-            "lead_id": [lead_id],
-            "product": product,
-            "quantity_mg": quantity_mg,
-            "status": "Pending",
-            "total_price": total_price,
-        })
-
-    def update_order(self, record_id: str, **fields) -> dict:
-        return self.orders.update(record_id, fields)
-
     def get_order(self, record_id: str) -> dict:
         return self.orders.get(record_id)
-
-    def get_pending_orders(self) -> list[dict]:
-        return self.orders.all(formula="{status}='Pending'")
-
-    def get_orders_by_status(self, status: str) -> list[dict]:
-        return self.orders.all(formula=f"{{status}}='{status}'")
 
     # ── Fulfillment orders (multi-item, crypto-verified, weekly-batched) ─────
 
@@ -168,7 +149,6 @@ class AirtableClient:
             "expected_amount": expected_amount,
             "payment_status": "awaiting",
             "fulfillment_status": "recorded",
-            "status": "Pending",
             "week_tag": week,
             "ship_phone": ship_phone,
         })

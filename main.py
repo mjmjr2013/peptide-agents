@@ -9,7 +9,6 @@ import sys
 
 from agents.ad_agent import run_ad_agent
 from agents.lead_gen_agent import run_lead_gen_agent
-from agents.tracking_agent import check_and_notify_all
 
 
 def run_ad_loop(interval: int = 300):
@@ -92,15 +91,6 @@ def run_report_scheduler():
         except Exception as e:
             print(f"[Main/Reports] {e}")
         time.sleep(300)  # check every 5 minutes
-
-
-def run_tracking_loop(interval: int = 600):
-    while True:
-        try:
-            check_and_notify_all()
-        except Exception as e:
-            print(f"[Main/TrackingAgent] {e}")
-        time.sleep(interval)
 
 
 def start_webhook_server(port: int = 5000):
@@ -457,10 +447,6 @@ def main():
             print(run_for_week(sys.argv[2]))
         return
 
-    if mode == "tracking":
-        run_tracking_loop()
-        return
-
     # Run all background loops + webhook server
     print("[Main] Starting all agents...")
 
@@ -468,7 +454,6 @@ def main():
         threading.Thread(target=run_ad_loop, daemon=True),
         threading.Thread(target=run_lead_gen_loop, daemon=True),
         threading.Thread(target=run_report_scheduler, daemon=True),
-        threading.Thread(target=run_tracking_loop, daemon=True),
     ]
 
     for t in threads:
