@@ -250,6 +250,33 @@ def start_webhook_server(port: int = 5000):
                     " ".join(y for y in [f.get("city"), f.get("state_province"), f.get("postal_code")] if y),
                     f.get("country")] if x)
                 ref = escape(f.get("order_ref", "") or o["id"])
+                # Labeling instructions for deals where the customer's branding covers
+                # only part of the order (the rest ship under our own Northline label).
+                # Without this the packer sees one undifferentiated kit list.
+                label_block = ""
+                try:
+                    from core.deals import get_deal, labeling_split
+                    _deal = get_deal(f.get("promo_code", ""))
+                    _split = labeling_split(_deal) if _deal else None
+                except Exception as e:
+                    print(f"[Manifest] labeling split failed for {ref}: {e!r}")
+                    _split = None
+                if _split:
+                    def _rows(lines):
+                        return "<br>".join(escape(f"{n}x {p} {s}".strip())
+                                           for p, s, n in lines)
+                    if _split["mixed"]:
+                        label_block = f"""
+                  <div class="labels">
+                    <b>🏷 TWO LABEL TYPES — check before packing</b>
+                    <div class="lgrp"><span class="tag cust">Customer branding</span>
+                      {_split['branded_kits']} kits<br>{_rows(_split['branded'])}</div>
+                    <div class="lgrp"><span class="tag ours">Northline label</span>
+                      {_split['unbranded_kits']} kits<br>{_rows(_split['unbranded'])}</div>
+                  </div>"""
+                    else:
+                        label_block = (f'<div class="labels"><b>🏷 All {_split["branded_kits"]} '
+                                       f'kits: customer branding</b></div>')
                 if f.get("tracking_sent"):
                     tracking_block = '<div class="done">✓ Tracking sent</div>'
                 else:
@@ -283,6 +310,7 @@ def start_webhook_server(port: int = 5000):
                   <div class="name">{escape(f.get('ship_name',''))}</div>
                   <div class="addr">{addr}</div>
                   <div class="items"><b>Items:</b><br>{items}</div>
+                  {label_block}
                   {tracking_block}
                   {photo_block}
                 </div>""")
@@ -310,6 +338,12 @@ def start_webhook_server(port: int = 5000):
   .file input{{display:none}}
   .photo-btn{{background:#34c759}} .photo-btn:active{{background:#28a745}}
   button:disabled{{opacity:.45}}
+  .labels{{background:#fff8e6;border:1px solid #f0d089;border-radius:10px;
+          padding:10px 12px;margin:10px 0;font-size:14px;color:#4a3a12}}
+  .lgrp{{margin-top:8px;line-height:1.45}}
+  .tag{{display:inline-block;font-size:12px;font-weight:700;color:#fff;
+       border-radius:6px;padding:2px 7px;margin-right:6px}}
+  .tag.cust{{background:#0a84ff}} .tag.ours{{background:#8e8e93}}
 </style></head><body>
 <div class="wrap">
 <h1>📦 Shipping Manifest</h1>

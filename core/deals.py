@@ -119,9 +119,37 @@ def branded_designs(deal: dict) -> list[tuple[str, str, int]]:
     return [(p, s, n) for (p, s), n in out.items()]
 
 
+def unbranded_lines(deal: dict) -> list[tuple[str, str, int]]:
+    """(product, spec, kits) for vials that do NOT carry the customer's branding —
+    these ship under our own Northline label."""
+    out: dict[tuple[str, str], int] = {}
+    for _sku, product, spec, kits, wl in deal["items"]:
+        n = int(kits) - int(wl)
+        if n > 0:
+            out[(product, spec)] = out.get((product, spec), 0) + n
+    return [(p, s, n) for (p, s), n in out.items()]
+
+
 def variation_count(deal: dict) -> int:
     """Distinct product+mg the factory prints = the white-label variation count."""
     return len(branded_designs(deal))
+
+
+def labeling_split(deal: dict) -> dict | None:
+    """Warehouse-facing labeling breakdown, or None when the order needs no special
+    handling (nothing customer-branded). Surfaced on the manifest card so the packer
+    can see at a glance which vials take which label."""
+    branded = sorted(branded_designs(deal))
+    unbranded = sorted(unbranded_lines(deal))
+    if not branded:
+        return None
+    return {
+        "branded": branded,
+        "unbranded": unbranded,
+        "branded_kits": branded_kits(deal),
+        "unbranded_kits": total_kits(deal) - branded_kits(deal),
+        "mixed": bool(unbranded),
+    }
 
 
 def order_items(deal: dict) -> list[dict]:
