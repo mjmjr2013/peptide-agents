@@ -79,6 +79,11 @@ RULES:
 Reply with ONLY the message text to send the customer — no quotes, no JSON, no labels."""
 
 
+def _white_label_table() -> str:
+    from core.white_label import table_text
+    return table_text()
+
+
 def _build_order_prompt() -> str:
     catalog = get_catalog_text()
     media_catalog = get_media_catalog_text()
@@ -97,6 +102,22 @@ def _build_order_prompt() -> str:
         "  reply in words. Never send the same video twice.\n"
         "Available assets (media_key — description):\n" + media_catalog + "\n\n"
     ) if media_catalog else ""
+    # White labelling — a real service we sell. Lily explains it and may raise it when
+    # it fits, but she has ZERO discount authority on these rates and never states a
+    # total herself: the system calculates and sends the figure (same rule as payment
+    # instructions). Below-table deals reach her as a pre-approved promo code instead.
+    white_label_section = (
+        _white_label_table() + "\n"
+        "- Mention white labelling when it genuinely fits — a bulk buyer, a reseller, someone\n"
+        "  ordering many kits, or anyone asking about branding, their own label, or private\n"
+        "  label. Do NOT raise it in your greeting and do NOT push it on small personal orders.\n"
+        "- If they want it, find out which products and strengths they want branded and how\n"
+        "  many stickers per design, then say you will get their exact quote — do NOT invent a\n"
+        "  total, and NEVER offer a discount on these rates.\n"
+        "- Their products ship with their branding already applied to the vials.\n"
+        "- If a customer gives you a discount code, just acknowledge it warmly — the system\n"
+        "  recognises the code and takes over the order itself.\n\n"
+    )
     return f"""You are a sales representative for Northline Group, a research peptide LAB in China.
 We are the lab — the manufacturer. We make and ship the product ourselves, direct from China.
 
@@ -244,7 +265,7 @@ BIG MULTI-PRODUCT ORDERS — never drop items:
   reply_message list match the line_items exactly. The list in your message and the JSON must
   agree and include everything.
 
-{proof_section}SENDING THE FULL PRICE LIST:
+{white_label_section}{proof_section}SENDING THE FULL PRICE LIST:
 We have a complete bilingual price list spreadsheet that can be sent as a file attachment.
 
 Use action "send_price_list" whenever the buyer wants pricing in general / the whole catalog
@@ -724,7 +745,253 @@ def _is_payment_ping(body: str) -> bool:
         return True
 
 
-def handle_inbound(from_phone: str, body: str, name: str = "") -> str:
+# ── Pre-approved deals (promo codes) ──────────────────────────────────────────
+# A deal is a human-approved basket at a human-approved total (core.deals), so it
+# bypasses per-item floor validation entirely — those guards stop Claude inventing
+# discounts, they are not meant to second-guess a price Daniel set himself.
+#
+# Sequence:  code → confirm basket + ask coin → create order → ask artwork →
+#            payment instructions → (paid) → factory email
+# The order is created BEFORE the artwork so the image attaches straight to it, and
+# payment instructions are withheld until artwork is in hand — so the factory
+# hand-off can fire the instant payment confirms with nothing left to chase.
+_pending_deals: dict[str, dict] = {}
+
+
+def _detect_coin(text: str) -> str:
+    """Which coin did the customer name? Keyword match — no Claude call needed for a
+    two-option question, and it can't hallucinate a third coin."""
+    t = (text or "").upper()
+    if "BTC" in t or "BITCOIN" in t:
+        return "BTC"
+    if "USDT" in t or "TETHER" in t or "ERC" in t or "ETH" in t:
+        return "USDT"
+    return ""
+
+
+def _download_twilio_media(url: str) -> tuple[bytes, str] | None:
+    """Twilio inbound media lives behind account auth (HANDOFF §15) — fetch the bytes
+    ourselves rather than passing the URL along to anything else."""
+    import base64
+    import urllib.request
+    try:
+        cred = f"{settings.twilio_account_sid}:{settings.twilio_auth_token}".encode()
+        req = urllib.request.Request(
+            url, headers={"Authorization": "Basic " + base64.b64encode(cred).decode()})
+        with urllib.request.urlopen(req, timeout=45) as r:
+            return r.read(), (r.headers.get("Content-Type") or "image/jpeg")
+    except Exception as e:
+        print(f"[Deal] media download failed: {e!r}")
+        return None
+
+
+def _start_deal(phone: str, code: str, conversation: list[dict],
+                existing_lead: dict | None) -> str:
+    """Customer presented a promo code. Validate it and open the deal."""
+    from core import deals as _deals
+    deal = _deals.get_deal(code)
+    if not deal:
+        return ""
+    try:
+        if deal.get("one_time") and airtable.is_promo_redeemed(deal["code"]):
+            _notify_operators(f"[PROMO REUSE] {phone} presented {deal['code']} but it is "
+                              f"already redeemed.")
+            return ("Thank you dear! That code has already been used for an order. "
+                    "Let me check with my manager and come back to you very quick 😊")
+    except Exception as e:
+        print(f"[Deal] redemption check failed: {e!r}")
+
+    _pending_deals[phone] = {"code": deal["code"], "coin": "", "order_id": "",
+                             "ref": "", "charge_usd": 0.0, "expected": 0.0}
+    set_stage(phone, "deal_coin")
+    total = _deals.grand_total(deal)
+    kits = _deals.total_kits(deal)
+    branded = _deals.branded_kits(deal)
+    print(f"[Deal] {phone} opened {deal['code']} — {kits} kits, ${total}")
+    extra = ""
+    if deal.get("requires_artwork"):
+        extra = (f" This includes your custom branding on {branded} of the vials, "
+                 f"and I will ask you for your label picture in a moment.")
+    return (f"Wonderful, dear! 😊 I have your special order ready — {kits} kits, "
+            f"everything we agreed, all together ${total:,.2f}.{extra}\n\n"
+            f"Would you like to pay with BTC or USDT, dear?")
+
+
+def _place_deal_order(phone: str, conversation: list[dict],
+                      existing_lead: dict | None) -> str:
+    """Create the pending order for an open deal at the EXACT agreed total."""
+    from core import deals as _deals
+    st = _pending_deals.get(phone) or {}
+    deal = _deals.get_deal(st.get("code", ""))
+    if not deal:
+        return ""
+    coin = st.get("coin") or ""
+    lead_id = existing_lead["id"] if existing_lead else ""
+    if not lead_id:
+        try:
+            airtable.create_lead(name=phone, email="", phone=phone,
+                                 buyer_type="Distributor", source="Direct",
+                                 notes=f"Promo {deal['code']}")
+            l = airtable.find_lead_by_phone(phone)
+            lead_id = l["id"] if l else ""
+        except Exception as e:
+            print(f"[Deal] lead create failed: {e!r}")
+    if not lead_id:
+        return "Let me get your order set up, dear — one moment."
+
+    # Supersede any earlier unpaid order under this code or from this phone, so a
+    # stale unique amount can't be matched later (same guard as renegotiation).
+    for finder in (lambda: airtable.get_open_promo_order(deal["code"]),
+                   lambda: airtable.get_awaiting_order_for_phone(phone)):
+        try:
+            prev = finder()
+            if prev:
+                airtable.orders.update(prev["id"], {"payment_status": "failed"})
+                print(f"[Deal] superseded stale order {prev['fields'].get('order_ref')}")
+        except Exception as e:
+            print(f"[Deal] supersede check failed: {e!r}")
+
+    total = _deals.grand_total(deal)
+    charge_usd, expected = airtable.allocate_unique_amount(total, coin, exact=True)
+    if coin == "BTC" and not expected:
+        return "One moment, dear — let me get you the current BTC amount."
+    ref = _order_ref()
+    try:
+        order = airtable.create_pending_order(lead_id, phone, _deals.order_items(deal),
+                                              charge_usd, coin, expected, ref,
+                                              airtable.week_tag())
+        airtable.orders.update(order["id"], {"promo_code": deal["code"]})
+    except Exception as e:
+        print(f"[Deal] pending order create failed: {e!r}")
+        return "Sorry dear, a small hiccup setting up your order — please try again in a moment."
+    st.update({"order_id": order["id"], "ref": ref, "charge_usd": charge_usd,
+               "expected": expected})
+    try:
+        airtable.update_lead_status(lead_id, "Converted", notes=f"Promo {deal['code']}")
+    except Exception as e:
+        print(f"[Deal] lead status update failed: {e!r}")
+    print(f"[Deal] order {ref} ({order['id']}) for {deal['code']} — ${charge_usd} {coin}")
+
+    if deal.get("requires_artwork"):
+        set_stage(phone, "awaiting_artwork")
+        return ("Perfect, dear! 😊 Before I send the payment details — please send me "
+                "the picture of the label you want on your vials. Just attach the image "
+                "here and I will pass it straight to our label team.")
+    return _deal_payment_instructions(phone)
+
+
+def _deal_payment_instructions(phone: str) -> str:
+    """Send the wallet + exact amount for an open deal order."""
+    st = _pending_deals.get(phone) or {}
+    coin = st.get("coin", "")
+    addr = _wallet_address(coin)
+    if not addr:
+        _notify_operators(f"[DEAL READY · no {coin} wallet configured] {phone} "
+                          f"{st.get('ref')} ${st.get('charge_usd')}")
+        return ("Thank you, dear! Let me confirm the payment details with my team and "
+                "send them to you in just a moment.")
+    _pending_payments[phone] = {"order_id": st.get("order_id"), "coin": coin,
+                                "expected": st.get("expected"), "since": time.time() - 180,
+                                "charge_usd": st.get("charge_usd"), "ref": st.get("ref")}
+    set_stage(phone, "awaiting_payment")
+
+    def _send_bare_address():
+        time.sleep(2)
+        try:
+            _send_to_prospect(phone, addr)
+        except Exception as e:
+            print(f"[Deal] bare-address send failed: {e!r}")
+    import threading
+    threading.Thread(target=_send_bare_address, daemon=True).start()
+    return _payment_instructions(coin, st.get("expected"), st.get("charge_usd"), addr)
+
+
+def _handle_deal_artwork(phone: str, media: list[tuple[str, str]],
+                         conversation: list[dict]) -> str:
+    """Store the customer's label artwork on their order, then release payment
+    instructions. Nothing is sent to the factory yet — that waits for payment."""
+    st = _pending_deals.get(phone) or {}
+    order_id = st.get("order_id")
+    if not order_id:
+        return ""
+    saved = 0
+    for url, _ctype in media:
+        got = _download_twilio_media(url)
+        if not got:
+            continue
+        data, ctype = got
+        ext = "png" if "png" in (ctype or "").lower() else "jpg"
+        try:
+            airtable.orders.upload_attachment(
+                order_id, "label_artwork", f"{st.get('ref','artwork')}-label-{saved+1}.{ext}",
+                data, content_type=ctype)
+            saved += 1
+        except Exception as e:
+            print(f"[Deal] artwork upload failed: {e!r}")
+    if not saved:
+        return ("Sorry dear, that picture did not come through for me 🙏 Could you "
+                "please send the label image once more?")
+    print(f"[Deal] stored {saved} artwork file(s) on {st.get('ref')}")
+    return ("Thank you dear, I have your label 😊 It looks lovely. Here are your "
+            "payment details:\n\n") + _deal_payment_instructions(phone)
+
+
+def notify_factory_for_order(order_id: str) -> bool:
+    """Email the label factory the artwork + print spec for a PAID order. Safe to call
+    on every payment confirmation: it no-ops unless the order is a white-label deal
+    that has not been sent yet. `factory_notified` is only set on a confirmed send, so
+    a failure leaves the job retryable rather than silently lost."""
+    from core import deals as _deals
+    from core import factory as _factory
+    from core.white_label import MIN_PER_VARIATION
+    try:
+        rec = airtable.get_order(order_id)
+    except Exception as e:
+        print(f"[factory] could not load order {order_id}: {e!r}")
+        return False
+    f = rec.get("fields", {})
+    ref = f.get("order_ref", order_id)
+    if f.get("factory_notified"):
+        return False
+    deal = _deals.get_deal(f.get("promo_code", ""))
+    if not deal or not deal.get("requires_artwork"):
+        return False
+    designs = _deals.branded_designs(deal)
+    if not designs:
+        return False
+
+    artwork = []
+    for att in (f.get("label_artwork") or []):
+        try:
+            import urllib.request
+            with urllib.request.urlopen(att.get("url"), timeout=45) as r:
+                artwork.append((att.get("filename") or "label.jpg", r.read(),
+                                att.get("type") or "image/jpeg"))
+        except Exception as e:
+            print(f"[factory] artwork fetch failed for {ref}: {e!r}")
+    if not artwork:
+        _notify_operators(f"[FACTORY BLOCKED] {ref} is paid but has no usable artwork — "
+                          f"the label job was NOT sent.")
+        return False
+
+    unbranded = _deals.unbranded_lines(deal)
+    note = ""
+    if unbranded:
+        note = ("NOTE: only the products listed above are customer-branded. The "
+                "remaining vials on this order ship under our own Northline label and "
+                "are handled separately — do not print customer artwork for them.")
+    ok = _factory.send_label_job(ref, designs, artwork, MIN_PER_VARIATION, note)
+    if ok:
+        try:
+            airtable.orders.update(order_id, {"factory_notified": True})
+        except Exception as e:
+            print(f"[factory] flag update failed for {ref}: {e!r}")
+    else:
+        _notify_operators(f"[FACTORY SEND FAILED] {ref} — the label job did not go out.")
+    return ok
+
+
+def handle_inbound(from_phone: str, body: str, name: str = "", media: list | None = None) -> str:
     print(f"[MessagingAgent] Inbound from {from_phone}: {body!r}")
 
     if body.strip().upper() == "RESET":
@@ -732,6 +999,7 @@ def handle_inbound(from_phone: str, body: str, name: str = "") -> str:
         _lead_stage.pop(from_phone, None)
         _pending_handoffs.pop(from_phone, None)
         _pending_payments.pop(from_phone, None)
+        _pending_deals.pop(from_phone, None)
         _last_outbound.pop(from_phone, None)
         _sent_media.pop(from_phone, None)
         try:
@@ -833,6 +1101,55 @@ def handle_inbound(from_phone: str, body: str, name: str = "") -> str:
             stage = "awaiting_payment"
             print(f"[MessagingAgent] Recovered awaiting order {f.get('order_ref')} for {from_phone} from Airtable")
 
+    # ── Pre-approved deal codes ────────────────────────────────────────────────
+    # Checked before the ordinary ordering path so a code is honoured wherever it
+    # turns up in the conversation. Not while under operator control, and not once
+    # payment instructions are already out (a code mentioned then is chatter, and
+    # re-opening would supersede the order they are about to pay).
+    if stage not in ("manual", "awaiting_payment", "awaiting_address", "awaiting_artwork"):
+        from core.deals import find_code_in
+        _code = find_code_in(body)
+        if _code:
+            conversation.append({"role": "user", "content": body})
+            _r = _start_deal(from_phone, _code, conversation,
+                             airtable.find_lead_by_phone(from_phone))
+            if _r:
+                conversation.append({"role": "assistant", "content": _r})
+                save_conversation(from_phone, conversation)
+                return _r
+            conversation.pop()
+
+    # ── Deal opened, waiting on the customer's coin choice ─────────────────────
+    if stage == "deal_coin":
+        conversation.append({"role": "user", "content": body})
+        _coin = _detect_coin(body)
+        if not _coin:
+            _r = ("Of course, dear 😊 Which one is easier for you — BTC or USDT? "
+                  "Either is perfectly fine.")
+        else:
+            _pending_deals.setdefault(from_phone, {})["coin"] = _coin
+            _r = _place_deal_order(from_phone, conversation,
+                                   airtable.find_lead_by_phone(from_phone))
+        conversation.append({"role": "assistant", "content": _r})
+        save_conversation(from_phone, conversation)
+        return _r
+
+    # ── Waiting on the customer's white-label artwork (before payment) ─────────
+    if stage == "awaiting_artwork":
+        conversation.append({"role": "user", "content": body or "[sent an image]"})
+        if media:
+            _r = _handle_deal_artwork(from_phone, media, conversation)
+            if not _r:  # order pointer lost (redeploy) — fall back to a warm re-ask
+                _r = ("Sorry dear, let me get that sorted — could you send the label "
+                      "picture once more? 🙏")
+        else:
+            _r = ("Almost ready, dear! 😊 I just need the picture of the label you want "
+                  "on your vials — please attach the image here and I will send your "
+                  "payment details right away.")
+        conversation.append({"role": "assistant", "content": _r})
+        save_conversation(from_phone, conversation)
+        return _r
+
     # While a prospect is under operator control, do NOT let the auto-agent reply.
     # Capture their message, forward it to the operators, and stay silent — the
     # operator drives the conversation via relay.
@@ -894,6 +1211,12 @@ def handle_inbound(from_phone: str, body: str, name: str = "") -> str:
                             airtable.mark_order_paid(pend["order_id"], res.get("tx_hash", ""), _now_iso())
                         except Exception as e:
                             print(f"[MessagingAgent] mark_paid failed: {e!r}")
+                        # White-label deals: the label factory gets the artwork + print
+                        # spec now that the money is in. No-ops for ordinary orders.
+                        try:
+                            notify_factory_for_order(pend["order_id"])
+                        except Exception as e:
+                            print(f"[MessagingAgent] factory notify failed: {e!r}")
                         set_stage(phone, "awaiting_address")
                         msg = ("Okay dear, finance has confirmed — payment received! 🎉 Thank you so "
                                "much. Now please send your shipping details so we can deliver: full "
@@ -1594,9 +1917,21 @@ def twilio_webhook_handler(form_data: dict) -> str:
     body = form_data.get("Body", "").strip()
     profile_name = form_data.get("ProfileName", "")
 
+    # Inbound media (white-label artwork). Twilio posts MediaUrl0..N; the URLs need
+    # account auth to fetch, so we only carry them through and download later.
+    media: list[tuple[str, str]] = []
+    try:
+        for i in range(int(form_data.get("NumMedia", 0) or 0)):
+            url = form_data.get(f"MediaUrl{i}", "")
+            if url:
+                media.append((url, form_data.get(f"MediaContentType{i}", "")))
+    except (TypeError, ValueError):
+        pass
+
     # Transcript log (Airtable) — inbound. Best-effort; never blocks the reply.
-    if body:
-        airtable.log_message(from_phone, "inbound", body)
+    if body or media:
+        airtable.log_message(from_phone, "inbound",
+                             body or f"[sent {len(media)} image(s)]")
 
     # Serialize per-phone so rapid back-to-back messages are handled one at a time
     # (this alone prevents the double-greet race). We intentionally do NOT suppress
@@ -1610,7 +1945,7 @@ def twilio_webhook_handler(form_data: dict) -> str:
             reply = _cap_reply()
         else:
             try:
-                reply = handle_inbound(from_phone, body, name=profile_name)
+                reply = handle_inbound(from_phone, body, name=profile_name, media=media)
             except Exception as e:
                 import traceback
                 traceback.print_exc()

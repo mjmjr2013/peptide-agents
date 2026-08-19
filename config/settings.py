@@ -57,6 +57,16 @@ class Settings:
     # WAREHOUSE_EMAIL is unset. Use the whatsapp: scheme, e.g. "whatsapp:+8613418806654".
     warehouse_whatsapp: str = os.environ.get("WAREHOUSE_WHATSAPP", "")
 
+    # Label factory — white-label artwork + print specs are EMAILED here once an order
+    # is paid. Email deliberately, not WhatsApp: the factory is a mainland-China contact
+    # and freeform WhatsApp outside the 24h window is silently dropped by Meta (the same
+    # failure that lost the July warehouse manifests). Comma-separated list allowed.
+    factory_emails: list[str] = [
+        e.strip() for e in os.environ.get("FACTORY_EMAIL", "").split(",") if e.strip()
+    ]
+    # Kept for a human to reach the factory; the agent does NOT send here.
+    factory_whatsapp: str = os.environ.get("FACTORY_WHATSAPP", "")
+
     # Secret token guarding the warehouse tracking page (/manifest?token=...). The
     # daily WhatsApp ping to the warehouse rep includes this link; only this token
     # can view the page or submit tracking numbers.

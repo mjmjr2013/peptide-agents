@@ -89,6 +89,13 @@ def check_awaiting_payments() -> dict:
         except Exception as e:
             print(f"[PayWatch] mark_paid failed: {e!r}")
             continue
+        # White-label deals: send the artwork + print spec to the label factory now
+        # that payment is in. No-ops for ordinary orders and for repeat calls.
+        try:
+            from agents.messaging_agent import notify_factory_for_order
+            notify_factory_for_order(o["id"])
+        except Exception as e:
+            print(f"[PayWatch] factory notify failed: {e!r}")
         paid += 1
         phone = airtable.get_lead_phone_for_order(o)
         if phone:
