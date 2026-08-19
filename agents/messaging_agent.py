@@ -494,18 +494,41 @@ def _shipping_fee(shipping: str, product_subtotal: float) -> int:
 _MAX_HISTORY = 40
 
 
+def _sanitize(messages: list[dict]) -> list[dict]:
+    """Drop any turn with empty content and re-merge same-role neighbours.
+
+    The Anthropic API rejects the WHOLE request with 400 'user messages must have
+    non-empty content' if a single turn is blank, and because history is persistent
+    one blank turn poisons EVERY later call for that customer — they get nothing but
+    the outage fallback until a redeploy. This actually happened on 2026-08-19: a
+    customer sent a bare image (WhatsApp body ''), it was appended verbatim, and the
+    thread was bricked mid-order. Sanitising here covers every append site at once."""
+    out: list[dict] = []
+    for m in messages:
+        content = (m.get("content") or "").strip()
+        if not content:
+            continue
+        if out and out[-1]["role"] == m.get("role"):   # keep roles alternating
+            out[-1]["content"] += "\n" + content
+        else:
+            out.append({"role": m.get("role", "user"), "content": content})
+    while out and out[0]["role"] != "user":            # history must start with the customer
+        out = out[1:]
+    return out
+
+
 def get_conversation(phone: str) -> list[dict]:
-    conv = _conversations.get(phone, [])
+    conv = _sanitize(_conversations.get(phone, []))
     if len(conv) > _MAX_HISTORY:
         conv = conv[-_MAX_HISTORY:]
         while conv and conv[0].get("role") != "user":  # API needs a user turn first
             conv = conv[1:]
-        _conversations[phone] = conv
+    _conversations[phone] = conv
     return conv
 
 
 def save_conversation(phone: str, messages: list[dict]):
-    _conversations[phone] = messages
+    _conversations[phone] = _sanitize(messages)
 
 
 def get_stage(phone: str) -> str:
@@ -757,6 +780,14 @@ def _is_payment_ping(body: str) -> bool:
 # hand-off can fire the instant payment confirms with nothing left to chase.
 _pending_deals: dict[str, dict] = {}
 
+# Stages the Airtable redeploy-recovery blocks must NOT touch. Recovery exists to
+# rebuild state a deploy wiped; when the stage is already known it must keep its hands
+# off. Omitting the deal stages here is what broke the first live DIEGO26 order: the
+# customer sent their artwork, recovery saw the (correctly) awaiting order, decided it
+# was a stranded payment, and answered with "checking with finance department".
+_RECOVERY_EXEMPT_STAGES = ("awaiting_payment", "awaiting_address", "manual",
+                           "deal_coin", "awaiting_artwork")
+
 
 def _detect_coin(text: str) -> str:
     """Which coin did the customer name? Keyword match — no Claude call needed for a
@@ -992,7 +1023,12 @@ def notify_factory_for_order(order_id: str) -> bool:
 
 
 def handle_inbound(from_phone: str, body: str, name: str = "", media: list | None = None) -> str:
-    print(f"[MessagingAgent] Inbound from {from_phone}: {body!r}")
+    print(f"[MessagingAgent] Inbound from {from_phone}: {body!r}"
+          + (f" +{len(media)} media" if media else ""))
+    # A media-only WhatsApp message arrives with an EMPTY body. Give it text now, at
+    # the entry point, so no downstream path can append a blank turn (see _sanitize).
+    if not (body or "").strip() and media:
+        body = "[sent an image]"
 
     if body.strip().upper() == "RESET":
         _conversations.pop(from_phone, None)
@@ -1061,7 +1097,7 @@ def handle_inbound(from_phone: str, body: str, name: str = "", media: list | Non
     # If a deploy landed between payment confirmation and address collection, the
     # in-memory stage is lost; re-enter awaiting_address so their address is parsed
     # into the order instead of being treated as ordinary chat.
-    if stage not in ("awaiting_payment", "awaiting_address", "manual") and from_phone not in _pending_payments:
+    if stage not in _RECOVERY_EXEMPT_STAGES and from_phone not in _pending_payments:
         try:
             _po = airtable.get_paid_order_awaiting_address_for_phone(from_phone)
         except Exception as e:
@@ -1083,7 +1119,7 @@ def handle_inbound(from_phone: str, body: str, name: str = "", media: list | Non
     # who already paid (their pings would be treated as a new chat, order never
     # verified). If Airtable still shows an awaiting order for this phone, re-enter
     # awaiting_payment so their payment is verified normally.
-    if stage not in ("awaiting_payment", "awaiting_address", "manual") and from_phone not in _pending_payments:
+    if stage not in _RECOVERY_EXEMPT_STAGES and from_phone not in _pending_payments:
         try:
             _ao = airtable.get_awaiting_order_for_phone(from_phone)
         except Exception as e:
@@ -1091,15 +1127,37 @@ def handle_inbound(from_phone: str, body: str, name: str = "", media: list | Non
             print(f"[MessagingAgent] awaiting-order recovery lookup failed: {e!r}")
         if _ao:
             f = _ao["fields"]
-            _pending_payments[from_phone] = {
-                "order_id": _ao["id"], "coin": (f.get("coin") or "").upper(),
-                "expected": float(f.get("expected_amount") or 0),
-                "since": time.time() - 7 * 86400,  # wide window; matching is by amount
-                "charge_usd": float(f.get("total_price") or 0), "ref": f.get("order_ref", ""),
-            }
-            set_stage(from_phone, "awaiting_payment")
-            stage = "awaiting_payment"
-            print(f"[MessagingAgent] Recovered awaiting order {f.get('order_ref')} for {from_phone} from Airtable")
+            # A white-label deal that still owes ARTWORK is not a stranded payment —
+            # payment instructions were never sent. Recovering it to awaiting_payment
+            # would answer the customer's artwork with "checking with finance"
+            # (2026-08-19 incident). Put them back in the artwork stage instead.
+            _deal = None
+            try:
+                from core.deals import get_deal as _get_deal
+                _deal = _get_deal(f.get("promo_code", ""))
+            except Exception as e:
+                print(f"[MessagingAgent] deal lookup during recovery failed: {e!r}")
+            if _deal and _deal.get("requires_artwork") and not f.get("label_artwork"):
+                _pending_deals[from_phone] = {
+                    "code": _deal["code"], "coin": (f.get("coin") or "").upper(),
+                    "order_id": _ao["id"], "ref": f.get("order_ref", ""),
+                    "charge_usd": float(f.get("total_price") or 0),
+                    "expected": float(f.get("expected_amount") or 0),
+                }
+                set_stage(from_phone, "awaiting_artwork")
+                stage = "awaiting_artwork"
+                print(f"[MessagingAgent] Recovered {f.get('order_ref')} for {from_phone} "
+                      f"into awaiting_artwork (deal {_deal['code']}, artwork still owed)")
+            else:
+                _pending_payments[from_phone] = {
+                    "order_id": _ao["id"], "coin": (f.get("coin") or "").upper(),
+                    "expected": float(f.get("expected_amount") or 0),
+                    "since": time.time() - 7 * 86400,  # wide window; matching is by amount
+                    "charge_usd": float(f.get("total_price") or 0), "ref": f.get("order_ref", ""),
+                }
+                set_stage(from_phone, "awaiting_payment")
+                stage = "awaiting_payment"
+                print(f"[MessagingAgent] Recovered awaiting order {f.get('order_ref')} for {from_phone} from Airtable")
 
     # ── Pre-approved deal codes ────────────────────────────────────────────────
     # Checked before the ordinary ordering path so a code is honoured wherever it
