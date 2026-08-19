@@ -26,8 +26,12 @@ def build_spec_text(order_ref: str, designs: list[tuple[str, str, int]],
              f"Order: {order_ref}",
              "",
              f"{len(designs)} designs, minimum {min_per_design} stickers per design.",
-             "Artwork is attached. Print the customer's design for each product below;",
-             "the product name and strength must appear exactly as written.",
+             "",
+             "The attached artwork is the customer's BRAND TEMPLATE — a single example label.",
+             "Reproduce that design for EACH product below, setting the product name and the",
+             "strength to the values listed here. Do NOT copy the product name or the mg from",
+             "the template image itself; it is only an example and its strength will not match",
+             "most of these lines.",
              ""]
     for product, spec, kits in sorted(designs):
         lines.append(f"  - {product} {spec}   ({kits} vial kit{'s' if kits != 1 else ''})")
