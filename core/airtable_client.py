@@ -115,18 +115,33 @@ class AirtableClient:
         offset = (5 - now.weekday()) % 7  # weekday: Mon=0..Sun=6; Sat=5
         return (now + timedelta(days=offset)).strftime("%Y-%m-%d")
 
-    def allocate_unique_amount(self, base_usd: float, coin: str) -> tuple[float, float]:
-        """Return (usd_charge, expected_amount). usd_charge = base + a cents tail not
-        currently in use among awaiting orders, so each payment maps to one order.
-        expected_amount is in the coin's units (USDT≈USD; BTC via live rate)."""
+    def allocate_unique_amount(self, base_usd: float, coin: str,
+                               exact: bool = False) -> tuple[float, float]:
+        """Return (usd_charge, expected_amount). usd_charge = an amount not currently in
+        use among awaiting orders, so each payment maps to one order.
+        expected_amount is in the coin's units (USDT≈USD; BTC via live rate).
+
+        exact=False (normal negotiated orders, always whole dollars): append a unique
+        cents tail. The dollar base is CEILED so a fractional base can never round the
+        customer DOWN — int() used to truncate, which would have quoted $2693.01 on a
+        $2693.50 order.
+        exact=True (pre-approved fixed-price deals): honour the agreed total to the cent
+        and only nudge upward on an actual collision — a price Daniel quoted the customer
+        should be the price they are asked to send."""
+        import math
         used = {round(float(o["fields"].get("total_price") or 0), 2)
                 for o in self.get_awaiting_orders()}
         charge = round(base_usd, 2)
-        for cents in range(1, 100):
-            cand = round(float(int(base_usd)) + cents / 100, 2)
-            if cand not in used:
-                charge = cand
-                break
+        if exact:
+            while charge in used:
+                charge = round(charge + 0.01, 2)
+        else:
+            base_dollars = float(math.ceil(charge))
+            for cents in range(1, 100):
+                cand = round(base_dollars + cents / 100, 2)
+                if cand not in used:
+                    charge = cand
+                    break
         if coin.upper() == "BTC":
             from core.crypto_verify import usd_to_btc
             expected = usd_to_btc(charge) or 0.0
@@ -203,6 +218,28 @@ class AirtableClient:
     # finished by the previous rep off-system, so they stay off his manifest and
     # daily email. Pass include_legacy=True to see them anyway (see /manifest?legacy=1).
     _NOT_LEGACY = "NOT({legacy_warehouse})"
+
+    def is_promo_redeemed(self, code: str) -> bool:
+        """True if a one-time deal code has already been used up. Redemption is derived
+        from Airtable rather than tracked in memory — a code counts as spent once an
+        order carrying it reaches 'paid' — so it survives redeploys and can't be
+        resurrected by the awaiting-order recovery path."""
+        code = (code or "").strip().upper()
+        if not code:
+            return False
+        rows = self.orders.all(
+            formula=f"AND({{promo_code}}='{code}',{{payment_status}}='paid')")
+        return bool(rows)
+
+    def get_open_promo_order(self, code: str) -> dict | None:
+        """An awaiting (unpaid) order already placed under this code, if any. Used to
+        supersede a stale order when the customer re-places — same guard the
+        renegotiation path uses so old unique amounts can't cross-match."""
+        code = (code or "").strip().upper()
+        rows = self.orders.all(
+            formula=f"AND({{promo_code}}='{code}',{{payment_status}}='awaiting')")
+        rows.sort(key=lambda o: o["fields"].get("created_at", ""), reverse=True)
+        return rows[0] if rows else None
 
     def get_orders_needing_tracking(self, include_legacy: bool = False) -> list[dict]:
         """Paid orders the warehouse still has to enter a tracking number for."""
