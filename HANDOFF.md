@@ -4,12 +4,21 @@ Paste this into a fresh Claude Code session (run from `~/peptide-agents`) to con
 It describes the live WhatsApp sales agent, the new order/payment/fulfillment system,
 how to deploy/debug, and what's outstanding. No secret tokens are stored here.
 
-Last updated after the **live BTC end-to-end test SUCCEEDED** (Daniel bought bac water, paid real
-BTC, verified on-chain, address collected, warehouse pinged — order NL-20260704-0F9D). Deployed at
-commit `013113db`+ (daily warehouse manifest EMAILED to `WAREHOUSE_EMAIL` §7; §16 vial-photo stage BUILT
-into the manifest page §18). Two prod bugs found & fixed during the test: the "ghosting" after
-payment (§9) and in-memory payment state stranded by redeploys (§4a). Remaining: §14 cleanups.
-See §4a (payment recovery), §9 (persona), §13/§14/§16/§17/§18 (manifest page).
+**Last updated 2026-08-19, deployed at `a7a91e6` (SUCCESS, `/health` ok).** That session built the
+**pre-approved promo-code deal system** for the DIEGO26 group order (§24), **white labelling as a
+standing service** with the label-factory hand-off (§25), switched the warehouse to **Jason** (§23),
+and set the **WhatsApp profile picture** (§26). Read §23–§26 first — they are the newest and the
+DIEGO26 customer is expected imminently.
+
+Earlier context: the **live BTC end-to-end test SUCCEEDED** (Daniel bought bac water, paid real BTC,
+verified on-chain, address collected, warehouse pinged — order NL-20260704-0F9D). Two prod bugs were
+found & fixed during that test: the "ghosting" after payment (§9) and in-memory payment state
+stranded by redeploys (§4a). See §4a (payment recovery), §9 (persona), §13/§16/§17/§18 (manifest page),
+and §14 for what is still outstanding.
+
+⚠️ **Railway auto-deploy did not fire ONCE in the 2026-08-19 session (5 pushes, 5 misses).** Treat
+force-deploy-by-SHA (§10) as the DEFAULT procedure, not a fallback, and always verify the running
+commit — two commits sat undeployed for a day before anyone noticed.
 
 ---
 
@@ -221,6 +230,22 @@ stage (tracking-number stage shipped as §18).
 - **Delete the orphaned `status` column in the Airtable Orders table** (UI: right-click header → Delete
   field) — code no longer reads/writes it but existing rows still display "Pending" (§22).
 
+**Open as of 2026-08-19 (newest session):**
+- 🔴 **Twilio balance $19.96 — below the $25 alert threshold.** Auto-recharge is supposedly enabled
+  (§14 above) so either it has not fired or it is not working. A dry Twilio account means Lily goes
+  SILENT mid-purchase, and the DIEGO26 order is $3,393.64. Check this first.
+- 🟡 **DIEGO26 is built but has never run end to end with a real customer.** Untested in prod: the
+  inbound artwork upload and the factory email (both need a real inbound image). To rehearse: WhatsApp
+  the HK number `DIEGO26`, pick a coin, send any image — that exercises everything up to payment.
+  Delete the resulting test order afterwards (it will carry `promo_code=DIEGO26` but only a PAID order
+  burns the code, so a rehearsal is safe).
+- 🟡 **Jason has never received an automated manifest** — his first fires when a new order is paid (§23).
+- 🟡 **WhatsApp profile text fields still blank** and customer-visible: `about`, `description`,
+  `websites`, `emails`, `vertical` (§26). Jordan to supply wording.
+- 🟡 `static/northline_banner.jpg` committed but unused — candidate for the §17 proof library (§26).
+- Orders fields added 2026-08-19: `legacy_warehouse`, `promo_code`, `label_artwork`, `factory_notified`.
+- Railway vars added 2026-08-19: `FACTORY_EMAIL`, `FACTORY_WHATSAPP`; `WAREHOUSE_EMAIL` changed (§23).
+
 ## 15. Gotchas (hard-won)
 - Consoles lie — verify via API (sender ONLINE w/ empty webhook silently drops inbound; bundle "submitted" while Draft).
 - iPhone photos are HEIC even when named `.jpeg` (silently rejected) → `sips -s format jpeg in.jpeg --out out.jpg`.
@@ -413,3 +438,109 @@ Fixes (all in `9871dfb`):
 - The Airtable **field itself still exists** (API delete was blocked; irreversible-schema guard) —
   delete it in the UI (§14 standing item). Until then old rows keep displaying the frozen "Pending".
 - Deployed via Railway auto-deploy (not SHA-verified — no Railway token that session; `/health` ok).
+
+## 23. Warehouse switched to Jason (2026-08-19)
+`WAREHOUSE_EMAIL` = **`jason@jjstshipping.com`** (was `ybgjwl888@outlook.com`, the previous rep).
+Jason is a **drop-in replacement**: same daily manifest email, same §18 manifest page (enter tracking,
+upload vial photo), weekly supplier bulk untouched. `MANIFEST_CC` still CCs Daniel.
+`WAREHOUSE_WHATSAPP` (+8613418806654) remains only as the fallback when the email var is unset.
+- **His manifest starts CLEAN at new orders.** The two paid-but-unshipped orders (NL-20260704-0F9D
+  from the July BTC test, NL-20260808-D4C1) are family trial runs the PREVIOUS rep is finishing
+  off-system. Both carry a new Orders checkbox **`legacy_warehouse`**; `get_orders_needing_tracking`
+  and `get_orders_needing_fulfillment` exclude flagged orders by default. Net effect: the daily
+  manifest finds 0 pending and sends NOTHING until a new order is paid.
+- **The old orders are still completable** at `/manifest?token=…&legacy=1` — that view lists them so
+  tracking can be entered and the customer still gets the automatic text. Without it, hiding them
+  would have silently killed their notification path.
+- Verified in prod: default view empty, `?legacy=1` lists both.
+- History: `jason@jjstshipping.com` had received exactly ONE manual manifest before this (2026-08-04,
+  sent alongside `1073944939@qq.com`). Jordan chose Jason alone going forward.
+
+## 24. Pre-approved deals via promo code (`core/deals.py`) — DIEGO26 LIVE
+A **deal** is a human-approved basket at a human-approved total (Daniel price-matches a competitor
+sheet). It deliberately **bypasses per-item floor validation** — those guards stop Claude inventing
+discounts, they are not there to second-guess a price the owner set himself.
+- **Deals live in CODE, redemption state in AIRTABLE.** The basket is fixed and shouldn't be casually
+  editable, and codes are checked on every inbound message so a lookup must be free. A code counts as
+  spent once an order carrying `promo_code` reaches `paid` (`is_promo_redeemed`) — that survives
+  redeploys and can't be resurrected by the awaiting-order recovery path.
+- **Flow:** code → confirm basket + ask coin → create order → ask artwork → payment instructions →
+  (paid) → factory email. Stages `deal_coin` and `awaiting_artwork`. Coin is **keyword-detected**, not
+  sent to Claude — a two-option question can't need a model and this way it can't invent a third coin.
+- A code is honoured wherever it appears in conversation, but **NOT** once payment instructions are
+  out (a code mentioned then is chatter; re-opening would supersede the order they are about to pay).
+  Any earlier unpaid order under the code or from the phone is superseded first.
+- A reused one-time code gets a warm holding reply + ops alert, never a second discounted order.
+- **DIEGO26** (Verix price match, Diego group): 22 lines / **30 kits**, items **$2,893.64**
+  ($2,193.50 original + $700.14 added 08-19), white label **$400**, shipping **$100**, grand total
+  **$3,393.64**. One-time, burns on payment confirm. All 22 SKUs exist in the live catalog, so the
+  supplier bulk and warehouse manifest work with no additions.
+  - Daniel's "standard NG pricing" figure of $3,582 does not reconcile with our catalog ($3,512 by
+    `CATEGORIES`) — harmless (the deal total is fixed) but don't quote a "you save $X" from it.
+  - The add-on lines were priced at ~12% off catalog vs ~37.5% on the original lines. Jordan
+    confirmed this is intentional (per-line Verix match, not a flat %).
+- ⚠️ **`allocate_unique_amount` had a latent UNDERCHARGE bug, now fixed.** The unique cents tail was
+  built with `int(base)`, which truncates: every total so far has been whole dollars so it never bit,
+  but DIEGO26's $3,393.64 would have been quoted as **$3,393.01**. The dollar base is now CEILED, and
+  a new `exact=True` mode honours a Daniel-quoted total to the cent, nudging up only on a real
+  collision. Verified: normal whole-dollar orders behave identically ($285.01, $285.02).
+
+## 25. White label as a standing service (`core/white_label.py`) + label factory (`core/factory.py`)
+Sticker rate card (Daniel, 2026-08-17). Product name + mg = 1 **design**; min **100 stickers/design**;
+tier chosen by qty PER design, rate applied to the total sticker count:
+`100-249 $0.40 · 250-499 $0.32 · 500-999 $0.25 · 1000+ $0.20` (repeat = exactly half).
+Reproduces his worked example: 21 designs × 100 = **$840 new / $420 repeat**.
+- **Lily has ZERO discount authority.** CODE computes the figure and she only explains the table —
+  same principle as code-generated payment instructions. Below-table deals reach her as a promo code.
+  She raises white labelling when it fits (bulk buyers, resellers, branding questions), never in the greeting.
+- **Repeats qualify STRUCTURALLY**, nothing is self-reported: a repeat is a reprint of a design we
+  already hold artwork for and the factory already has on file. New artwork, or a different product
+  or strength (the label prints name + mg), = a NEW design at new-order rates.
+- **Artwork is collected BEFORE payment instructions go out**, so the factory hand-off can fire the
+  instant payment confirms with nothing left to chase. Twilio inbound media needs account auth
+  (§15), so the bytes are downloaded server-side and uploaded onto the order (`label_artwork`).
+- **The factory is EMAILED, never WhatsApped** — `FACTORY_EMAIL` = `2641377459@qq.com`. It is a
+  mainland-China contact and freeform WhatsApp outside the 24h window is silently dropped by Meta,
+  the same failure that lost the July manifests (§15/§21). Artwork rides as a real attachment so
+  nothing depends on an Airtable URL that expires in ~2h. `FACTORY_WHATSAPP`
+  (+8615381769607) is stored for a HUMAN to use; the agent does not send there.
+- Fires from BOTH payment-confirm paths (inbound verify + payment watcher). No-ops unless the order
+  is an unsent white-label deal. `factory_notified` is set ONLY on a confirmed SMTP send, so a
+  failure stays retryable; a paid order with no usable artwork raises an ops alert instead of a
+  silent half-send.
+- **White label is PER-KIT, not per-line.** Each deal item carries `kits` (what ships / what the
+  supplier bulks) and `wl_kits` (how many carry the CUSTOMER's branding). For DIEGO26 the customer's
+  artwork covers the ORIGINAL batch only: **30 kits ship, 25 customer-branded across 21 designs, 5
+  under our own Northline label** — Daniel arranges those with Jason directly, off-system. RT15 is
+  excluded from the factory job entirely; Reta 30mg / BPC-157 / Tesamorelin / MOTS-c print for their
+  ORIGINAL quantity only. The factory email lists only branded designs and says so explicitly.
+- **The manifest card shows the split** so the packer can't misread a 30-kit order as one label type:
+  a "TWO LABEL TYPES" panel with the customer-branded designs and the Northline ones, derived from
+  `wl_kits` (so it can't drift). Orders with no promo code render exactly as before.
+
+## 26. WhatsApp business profile (2026-08-19)
+Sender `XE42b164026f3bbf3bd190502b0ba2c997` (whatsapp:+85292909474), status ONLINE.
+- **Profile picture is SET**: `logo_url` = `{_BASE_URL}/static/northline_profile.png`. Confirmed by
+  read-back. The source logo Daniel sent is ~2:1, so a circular crop would have kept the mountains and
+  cut the NG monogram and wordmark. `northline_profile.png` is a rebuilt **1024×1024**: stray
+  full-width white rule (rows 13–17, a crop artifact) removed, mark centred on the logo's own navy
+  `(4,20,48)` so padding is seamless, sized to 88% of the circle radius. Verified against a rendered
+  circular mask.
+- **A BANNER CANNOT BE SET — do not retry.** Twilio's docs list `banner_url` as writable and the API
+  accepts the write, then silently drops it. Proven: the SAME image URL persists as `logo_url` and
+  vanishes as `banner_url`; sending `banner_url` alone returns "Update request body is empty" (the
+  field is stripped before validation). Root cause: Meta's WhatsApp Business Profile has only
+  `about`, `address`, `description`, `email`, `profile_picture_url`, `websites`, `vertical` — there is
+  no banner/cover concept. Twilio's schema is shared with RCS, where agents DO have banners.
+- `static/northline_banner.jpg` (the cleanroom facility shot, 1290×716) is committed but UNUSED.
+  Good candidate for the §17 proof-media library — it is strong "real lab" evidence and the library
+  is currently 4 assets, only one a photo.
+- **Still blank and customer-visible**: `about`, `description`, `websites`, `emails`, `vertical`
+  (a `HEALTH` option exists). Jordan to supply wording — do not invent copy for a live profile.
+- Getting images out of iMessage without Full Disk Access: right-click → Copy in Messages, then
+  `osascript -e 'set f to (open for access POSIX file "/path/out.png" with write permission)'
+  -e 'write (the clipboard as «class PNGf») to f' -e 'close access f'`. The Attachments folder
+  itself is unreadable (§15) and Claude cannot write image bytes from a chat attachment to disk.
+- ⚠️ Profile media must be at a SHORT public URL: Twilio caps `logo_url` at **256 chars**, which
+  rules out Airtable attachment URLs (they are far longer). It must be served by the app, which
+  means the image has to be committed AND deployed before the profile can be set.
