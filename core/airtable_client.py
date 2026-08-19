@@ -199,9 +199,17 @@ class AirtableClient:
         """Paid orders not yet sent to the warehouse on a manifest (daily cadence)."""
         return self.orders.all(formula="AND({payment_status}='paid',NOT({manifested}))")
 
-    def get_orders_needing_tracking(self) -> list[dict]:
+    # Orders flagged `legacy_warehouse` predate the Jason handoff and are being
+    # finished by the previous rep off-system, so they stay off his manifest and
+    # daily email. Pass include_legacy=True to see them anyway (see /manifest?legacy=1).
+    _NOT_LEGACY = "NOT({legacy_warehouse})"
+
+    def get_orders_needing_tracking(self, include_legacy: bool = False) -> list[dict]:
         """Paid orders the warehouse still has to enter a tracking number for."""
-        return self.orders.all(formula="AND({payment_status}='paid',NOT({tracking_sent}))")
+        clauses = ["{payment_status}='paid'", "NOT({tracking_sent})"]
+        if not include_legacy:
+            clauses.append(self._NOT_LEGACY)
+        return self.orders.all(formula=f"AND({','.join(clauses)})")
 
     # Fulfillment lifecycle: recorded → in_bulk_order → labeled → shipped.
     # Stages can interleave (tracking may precede the weekly bulk; the vial photo
@@ -229,11 +237,14 @@ class AirtableClient:
             "tracking_sent": True,
         })
 
-    def get_orders_needing_fulfillment(self) -> list[dict]:
+    def get_orders_needing_fulfillment(self, include_legacy: bool = False) -> list[dict]:
         """Paid orders with warehouse work outstanding: tracking number not yet
         entered OR vial photo not yet sent. Drives the /manifest page + daily email."""
-        return self.orders.all(
-            formula="AND({payment_status}='paid',OR(NOT({tracking_sent}),NOT({vial_photo_sent})))")
+        clauses = ["{payment_status}='paid'",
+                   "OR(NOT({tracking_sent}),NOT({vial_photo_sent}))"]
+        if not include_legacy:
+            clauses.append(self._NOT_LEGACY)
+        return self.orders.all(formula=f"AND({','.join(clauses)})")
 
     def attach_vial_photo(self, order_id: str, content: bytes, filename: str,
                           content_type: str = "image/jpeg") -> str:

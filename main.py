@@ -223,8 +223,11 @@ def start_webhook_server(port: int = 5000):
             token = escape(settings.manifest_token)
             saved = request.args.get("saved", "")
             photo = request.args.get("photo", "")
+            # ?legacy=1 also shows pre-Jason orders the old rep is finishing off-system,
+            # so tracking can still be entered for them (and the customer auto-notified).
+            include_legacy = request.args.get("legacy", "") in ("1", "true", "yes")
             try:
-                orders = airtable.get_orders_needing_fulfillment()
+                orders = airtable.get_orders_needing_fulfillment(include_legacy=include_legacy)
             except Exception as e:
                 print(f"[Manifest] load failed: {e!r}")
                 orders = []
