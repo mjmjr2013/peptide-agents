@@ -2,10 +2,10 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "price-list",
+      "name": "website",
       "runtimeExecutable": "python3",
-      "runtimeArgs": ["-m", "http.server", "5050", "--directory", "static"],
-      "port": 5050
+      "runtimeArgs": ["-m", "http.server", "8788", "--directory", "website"],
+      "port": 8788
     }
   ]
 }
