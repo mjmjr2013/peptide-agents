@@ -80,19 +80,18 @@ def usd_to_btc(usd: float) -> float | None:
 
 
 def verify_btc(address: str, expected_btc: float, since_unix: float,
-               tol_pct: float = 0.015, min_conf: int = 1, over_pct: float = 0.05,
-               other_amounts: list[float] | None = None) -> dict | None:
+               other_amounts: list[float] | None = None, loose: bool = False) -> dict | None:
     """Look for an inbound BTC tx to `address` of ~expected_btc, confirmed, since
-    since_unix. tol_pct allows for tiny rate drift between quote and send.
-    Overpayment up to over_pct is accepted (customers pad for fees / exchanges
-    round UP); underpayment beyond tol_pct is never accepted. A tx whose amount
-    matches some OTHER awaiting order's expected amount (other_amounts, within
-    tol_pct) is skipped — it belongs to that order, not this one."""
+    since_unix. Auto-accept band allows tiny rate drift/underpay (2%) and overpay up
+    to 8% (customers pad for fees / exchanges round UP). `loose=True` widens to ±20-30%
+    for the review safety net. A tx that another awaiting order matches more closely is skipped."""
     if not address or not expected_btc:
         return None
     txs = _get(f"https://mempool.space/api/address/{address}/txs")
     if not isinstance(txs, list):
         return None
+    tol_pct = 0.20 if loose else 0.02
+    over_pct = 0.40 if loose else 0.10
     exp_sats = int(round(expected_btc * 1e8))
     tol = max(int(exp_sats * tol_pct), 1000)
     over = max(int(exp_sats * over_pct), tol)
@@ -107,11 +106,11 @@ def verify_btc(address: str, expected_btc: float, since_unix: float,
                        if v.get("scriptpubkey_address") == address)
         if not received or not (-tol <= received - exp_sats <= over):
             continue
-        if any(abs(received - int(round(o * 1e8))) <= max(int(o * 1e8 * tol_pct), 1000)
+        if any(abs(received - int(round(o * 1e8))) < abs(received - exp_sats)
                for o in (other_amounts or [])):
-            continue  # exact match for another awaiting order — not ours
+            continue  # another awaiting order is a closer match — not ours
         return {"tx_hash": tx.get("txid"), "amount": round(received / 1e8, 8),
-                "ts": bt or time.time(), "coin": "BTC"}
+                "over": round((received - exp_sats) / 1e8, 8), "ts": bt or time.time(), "coin": "BTC"}
     return None
 
 
@@ -171,14 +170,15 @@ USDT_ERC20 = "0xdac17f958d2ee523a2206206994597c13d831ec7"  # Tether USDT on Ethe
 
 
 def verify_usdt_eth(address: str, expected_usdt: float, since_unix: float,
-                    tolerance: float = 0.005, max_over: float = 5.0,
-                    other_amounts: list[float] | None = None) -> dict | None:
+                    other_amounts: list[float] | None = None, loose: bool = False) -> dict | None:
     """Look for an inbound USDT-ERC20 transfer to `address` of ~expected_usdt, since
     since_unix, via the Etherscan API (needs settings.etherscan_api_key).
-    Overpayment up to max_over USDT is accepted (real senders pad for fees or get
-    rounded UP by exchanges — an exact-only match strands their order); underpayment
-    is never accepted. A tx that exactly matches some OTHER awaiting order's unique
-    amount (other_amounts) is skipped — it belongs to that order."""
+
+    Auto-accept band: overpayment up to max(5% of expected, $15) and tiny underpay
+    ($0.02) — real senders round up / pad, and an exact-only match strands their order.
+    `loose=True` widens to roughly ±20-30% for the human-review safety net (the watcher
+    uses it to flag a near-miss payment for manual confirmation rather than dropping it).
+    A tx that another awaiting order matches MORE closely (other_amounts) is skipped."""
     if not address:
         return None
     from config import settings
@@ -186,6 +186,8 @@ def verify_usdt_eth(address: str, expected_usdt: float, since_unix: float,
     if not key:
         print("[crypto] ETHERSCAN_API_KEY not set — cannot verify ERC-20 USDT")
         return None
+    under_tol = max(expected_usdt * 0.20, 5.0) if loose else 0.02
+    over_tol = max(expected_usdt * 0.40, 60.0) if loose else max(expected_usdt * 0.10, 30.0)
     url = (f"https://api.etherscan.io/v2/api?chainid=1&module=account&action=tokentx"
            f"&contractaddress={USDT_ERC20}&address={address}&page=1&offset=25&sort=desc&apikey={key}")
     d = _get(url)
@@ -202,23 +204,24 @@ def verify_usdt_eth(address: str, expected_usdt: float, since_unix: float,
             continue
         if ts < since_unix - 3600:
             continue
-        if not (-tolerance <= amt - expected_usdt <= max_over):
+        if not (expected_usdt - under_tol <= amt <= expected_usdt + over_tol):
             continue
-        if any(abs(amt - o) <= tolerance for o in (other_amounts or [])):
-            continue  # exact match for another awaiting order — not ours
-        return {"tx_hash": tx.get("hash"), "amount": round(amt, 2), "ts": ts, "coin": "USDT"}
+        if any(abs(amt - o) < abs(amt - expected_usdt) for o in (other_amounts or [])):
+            continue  # another awaiting order is a closer match — not ours
+        return {"tx_hash": tx.get("hash"), "amount": round(amt, 2),
+                "over": round(amt - expected_usdt, 2), "ts": ts, "coin": "USDT"}
     return None
 
 
 def verify_payment(coin: str, address: str, expected_amount: float, since_unix: float,
-                   other_amounts: list[float] | None = None) -> dict | None:
+                   other_amounts: list[float] | None = None, loose: bool = False) -> dict | None:
     """Dispatch to the right chain. expected_amount is USDT units for USDT, BTC for BTC.
     USDT is verified on Ethereum (ERC-20). other_amounts = expected amounts of OTHER
-    awaiting orders on the same coin, so an overpaid tx can't be claimed by the wrong
-    order."""
+    awaiting orders on the same coin, so a payment can't be claimed by the wrong order.
+    loose=True returns near-miss payments (for the human-review safety net)."""
     coin = (coin or "").upper()
     if coin == "USDT":
-        return verify_usdt_eth(address, expected_amount, since_unix, other_amounts=other_amounts)
+        return verify_usdt_eth(address, expected_amount, since_unix, other_amounts=other_amounts, loose=loose)
     if coin == "BTC":
-        return verify_btc(address, expected_amount, since_unix, other_amounts=other_amounts)
+        return verify_btc(address, expected_amount, since_unix, other_amounts=other_amounts, loose=loose)
     return None

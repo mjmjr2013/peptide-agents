@@ -52,6 +52,37 @@ def _notify_paid(phone: str) -> bool:
         return False
 
 
+def _flag_for_review(order: dict, near: dict) -> None:
+    """A near-miss payment landed for an awaiting order but fell outside the auto-accept
+    band. Email ops once (so it's never silently lost) and flag the order to avoid repeats."""
+    f = order["fields"]
+    ref = f.get("order_ref", "?"); coin = f.get("coin", ""); exp = f.get("expected_amount", "")
+    amt = near.get("amount"); over = near.get("over"); tx = near.get("tx_hash", "")
+    kind = "OVERPAID" if isinstance(over, (int, float)) and over > 0 else "UNDERPAID"
+    body = (
+        f"A payment landed that likely belongs to order {ref} but did NOT auto-verify "
+        f"(it fell outside the auto-accept band):\n\n"
+        f"  Status:      {kind}\n"
+        f"  Order wants: {exp} {coin}\n"
+        f"  Received:    {amt} {coin}   (delta {'+' if (isinstance(over,(int,float)) and over>=0) else ''}{over} {coin})\n"
+        f"  Tx:          {tx}\n\n"
+        f"If this is the customer's payment, open the order in Airtable and set "
+        f"payment_status = paid and paste the tx hash. (Overpayment = they paid enough; you may "
+        f"refund the excess. Underpayment = decide whether to ship or ask for the difference.)\n\n"
+        f"This order is now flagged so you won't get repeat emails about it.\n"
+    )
+    try:
+        from agents.weekly_report import _send_email
+        _send_email(f"⚠️ Payment needs manual confirm — {ref} ({kind})", body, [])
+    except Exception as e:
+        print(f"[PayWatch] review email failed: {e!r}")
+    try:
+        airtable.update_order(order["id"], payment_flagged=True)
+    except Exception as e:
+        print(f"[PayWatch] flag write failed: {e!r}")
+    print(f"[PayWatch] FLAGGED {ref} for review: got {amt} {coin} vs expected {exp}")
+
+
 def check_awaiting_payments() -> dict:
     """One watcher cycle. Returns counts for the scheduler log."""
     from agents.messaging_agent import _wallet_address, set_stage, _pending_payments
@@ -81,6 +112,17 @@ def check_awaiting_payments() -> dict:
             print(f"[PayWatch] verify {f.get('order_ref')} failed: {e!r}")
             continue
         if not res:
+            # SAFETY NET: a real payment can land just outside the auto-accept band
+            # (big over/underpay). Never silently drop it — do a wide "loose" scan and,
+            # if a plausible payment exists, email ops once for manual confirmation.
+            if not f.get("payment_flagged"):
+                try:
+                    near = crypto_verify.verify_payment(coin, _wallet_address(coin), expected,
+                                                        since, other_amounts=others, loose=True)
+                except Exception:
+                    near = None
+                if near:
+                    _flag_for_review(o, near)
             continue
         print(f"[PayWatch] MATCH {f.get('order_ref')}: {res['amount']} {coin} tx={res['tx_hash'][:20]}…")
         try:
