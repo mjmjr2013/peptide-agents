@@ -79,12 +79,19 @@ While waiting for confirmation, the agent replies with **varied, reassuring, coi
   NOTE: ERC-20 gas is paid by the customer (~$3–25). Solana (~$0.0005) and Tron (~$1) verifiers were
   also built earlier and are in git history if you want to switch back — Solana/Tron are far cheaper for buyers.
 - **BTC**, verified via **mempool.space** (no key); USD→BTC rate locked at quote (`usd_to_btc`), 1 confirmation.
-- Matching is by **unique amount** — with bounded OVERPAY acceptance (2026-07-15 fix): USDT matches
-  from −0.005 to +$5 over expected; BTC from −1.5% to +5%. Underpayment is never accepted. A tx that
-  exactly matches ANOTHER awaiting order's unique amount is skipped (`other_amounts` guard, fed from
-  `get_awaiting_orders` at the call site) so overpay can't cross-claim. Added after a real customer
-  sent 279.2376 USDT for a 279.01 order (exchanges round up / senders pad for fees) and the
-  exact-only matcher left them stranded on "finance doesn't see it yet".
+- Matching is by **amount** on a shared address, with a widened auto-accept band + a human-review
+  **SAFETY NET** (2026-08-24, commit `922845e`, after TWO escalating overpay incidents):
+  - Auto-accept: USDT overpay up to `max(10% of expected, $30)`, underpay only −$0.02; BTC under 2% / over 10%.
+    A payment that ANOTHER awaiting order matches MORE closely is skipped (`other_amounts` closest-match guard,
+    fed from `get_awaiting_orders`), so overpay can't cross-claim.
+  - Safety net: `agents/payment_watcher.py`, on no auto-match, reruns `verify_payment(..., loose=True)` (±20–40%);
+    any plausible near-miss is emailed to ops (`report_emails` = jordan@/daniel@) ONCE and the order's new
+    `payment_flagged` checkbox is set. **A received payment is never silently dropped again.**
+  - History: 2026-07-15 added +$5 overpay (a 279.24/279.01 order had stranded); 2026-08-24 the flat $5 was
+    STILL too tight — a 923.01 order was paid with 932.20 (+$9.19) and sat stuck — so it was widened to 10%
+    and the loose-scan review email added. See §27.
+  - **Deeper fix on the table:** amount-matching on ONE shared address is inherently guess-prone; the bulletproof
+    architecture is a **unique receiving address per order** (HD-wallet xpub derivation). Scoped but not built — see §27.
 
 ## 6. Airtable data model (system of record)
 Base `apprMJI8obXHOLvJU`. Tables: Leads, Campaigns, Labs, **Orders**, **Order Items**, **Messages**.
@@ -544,3 +551,48 @@ Sender `XE42b164026f3bbf3bd190502b0ba2c997` (whatsapp:+85292909474), status ONLI
 - ⚠️ Profile media must be at a SHORT public URL: Twilio caps `logo_url` at **256 chars**, which
   rules out Airtable attachment URLs (they are far longer). It must be served by the app, which
   means the image has to be committed AND deployed before the profile can be set.
+
+## 27. Payment overpay incident + fix (2026-08-24, commit `922845e`) + per-order-address scope
+**Incident:** Order `NL-20260829-B84A` (Daniel/brother, +14806366814) owed **923.01 USDT**; he sent
+**932.195761 USDT** on Ethereum (a real, confirmed tx `0xab50f217…`, +$9.19 overpay — likely a 923→932
+transposition). `verify_usdt_eth` auto-accepted overpay only up to a flat **$5**, so the watcher never matched
+it and the order sat `awaiting`; the customer got "finance doesn't see it yet". Third time this class bit us
+(cf. §5 the 279.24/279.01 case). Diagnosed via: Airtable order (`expected_amount` 923.01, still awaiting) vs
+Etherscan `tokentx` to `ETH_ADDRESS` (932.20 received) — the delta exceeded the $5 band.
+**Fix (deployed, live-verified):** widened USDT auto-accept to `max(10% of expected, $30)` over / −$0.02 under
+(BTC under 2% / over 10%); switched the cross-order guard to *closest-match*; and added the payment-watcher
+**loose-scan review email** + `payment_flagged` field (see §5). After deploy the prod watcher auto-remediated
+B84A (marked paid, messaged Daniel for his address). Overpay of $9.19 is his to refund/credit.
+
+**Root fragility:** we match payments by AMOUNT on ONE shared receiving address (`ETH_ADDRESS` / `BTC_ADDRESS`).
+That is inherently guess-prone (over/under/ambiguous), which is why this keeps recurring. The bulletproof
+architecture is a **unique receiving address per order**.
+
+### Per-order receiving address — scope (NOT built)
+**Concept:** give every order its own fresh receiving address. Then ANY payment to that address unambiguously
+belongs to that order — no amount-matching, over/underpay becomes a pure business decision, and the whole
+failure class disappears.
+**Key mechanic (safe):** use an HD wallet (BIP32). From the **extended PUBLIC key (xpub)** you can derive child
+ADDRESSES without any private key. The server stores an `addr_index` per order and derives
+`address = derive(xpub, index)` — it **never holds keys**; keys stay cold in your wallet. This is exactly how
+exchanges mint per-customer deposit addresses.
+**Flow changes:** order create → assign next `addr_index` → derive + store the order's address → payment
+instructions use THAT address → watcher checks each awaiting order's OWN address (`get_awaiting_orders` already
+gives the per-order context) for any inbound ≥ (expected − dust) → mark paid.
+**Chain feasibility (matching works on all; difference is only the treasury/sweeping chore):**
+- **BTC — easy.** xpub from Electrum or a hardware wallet (Ledger/Trezor). UTXO model → sweep funds freely, no
+  per-address gas. Clean win; do this first if we go this route.
+- **USDT-ERC20 — matching works, sweeping is the chore.** Derived ETH addresses can RECEIVE + be watched fine,
+  but moving USDT off each derived address needs ETH gas AT that address (pre-fund a little ETH per address, or
+  deploy forwarder contracts like commercial processors). Funds can be swept lazily/batched — it does not block
+  verification. If per-order on USDT is wanted, easier on **Tron/Solana** (cheap native fees) than ETH.
+**What Jordan must provide:** an **xpub** from a wallet HE controls. ⚠️ **Phantom does NOT expose an xpub** —
+this needs a different wallet (Electrum for BTC; a hardware wallet or seed-based tool for the xpub). Keys/seed
+never touch the server.
+**Effort:** ~a day for BTC-only per-order (derivation lib + `addr_index`/`order_address` fields + wire the
+watcher/instructions). ETH/USDT per-order adds the sweeping/gas operational piece. Alternative: self-hosted
+**BTCPay Server** (BTC) offloads the whole thing but is more infra.
+**Recommendation:** the 2026-08-24 amount-band + review-email fix makes the CURRENT shared-address setup robust
+for this volume (auto-accept common cases; email on anything unusual). Move to per-order addresses only if
+payment reliability must be absolute — start with **BTC via xpub**, keep USDT on the (now-fixed) shared address
+unless we also move USDT to Tron/Solana.
