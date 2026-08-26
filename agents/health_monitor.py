@@ -3,10 +3,11 @@ from __future__ import annotations
 Health monitor — makes billing/credit exhaustion loud instead of silent.
 
   • Claude canary — HOURLY. A tiny real API call through the same client the
-    sales agent uses. If it fails (credits exhausted, key revoked, outage),
-    email ops immediately; re-alert every 6h while failing; email once on
-    recovery. This catches the 2026-07-08 failure mode (Anthropic credits ran
-    dry, prospects got silence) BEFORE a customer hits it.
+    sales agent uses. Retried up to 4× over ~45s so a transient 529 'Overloaded'
+    (common right at a restart) does NOT page ops; only a SUSTAINED failure
+    (credits exhausted, key revoked, real outage) alerts, then re-alerts every 6h
+    while failing and emails once on recovery. Catches the 2026-07-08 failure mode
+    (Anthropic credits ran dry, prospects got silence) BEFORE a customer hits it.
   • Twilio balance — DAILY. Emails ops when the balance drops below
     TWILIO_BALANCE_ALERT_USD (default $25) so outbound WhatsApp never dies
     mid-conversation. (Auto-recharge in the Twilio console is the real fix;
@@ -36,30 +37,46 @@ def _email(subject: str, body: str) -> None:
         print(f"[Health] alert email failed: {e!r}")
 
 
-def check_claude() -> bool:
-    """One tiny real Claude call (~$0.001). Returns True if the brain is up."""
+def _canary_once() -> tuple[bool, str]:
+    """One tiny real Claude call (~$0.001). Returns (ok, error_repr)."""
     from core.claude_client import claude
     try:
         claude.create(system="You are a health check.",
                       messages=[{"role": "user", "content": "Reply with the single word: ok"}],
                       max_tokens=64)
+        return True, ""
     except Exception as e:
-        print(f"[Health] Claude canary FAILED: {e!r}")
-        now = time.time()
-        if not _state["claude_failing"] or now - _state["last_claude_alert"] > _REALERT_SECS:
-            _state["last_claude_alert"] = now
-            _email("ALERT: Northline agent brain is DOWN (Claude API failing)",
-                   f"The hourly canary call to the Anthropic API failed:\n\n{e!r}\n\n"
-                   f"Customers messaging the WhatsApp number are getting the canned holding "
-                   f"reply, not Lily. If the error mentions credit balance, top up at "
-                   f"console.anthropic.com → Plans & Billing (and turn on auto-reload).")
-        _state["claude_failing"] = True
-        return False
-    if _state["claude_failing"]:
-        _email("RESOLVED: Northline agent brain is back up",
-               "The hourly Claude canary call succeeded again. Lily is answering normally.")
-    _state["claude_failing"] = False
-    return True
+        return False, repr(e)
+
+
+def check_claude() -> bool:
+    """Tiny real Claude call, RETRIED up to 4× over ~45s before alarming. Returns True if
+    the brain is up. This tolerates transient blips — e.g. a 529 'Overloaded' (common right
+    at a restart) — and only pages ops on a SUSTAINED failure (dead key / exhausted credits /
+    real outage), not a one-second hiccup."""
+    last_err = ""
+    for attempt in range(4):  # attempts at ~0s, 15s, 30s, 45s
+        ok, last_err = _canary_once()
+        if ok:
+            if _state["claude_failing"]:
+                _email("RESOLVED: Northline agent brain is back up",
+                       "The Claude canary call succeeded again. Lily is answering normally.")
+            _state["claude_failing"] = False
+            return True
+        if attempt < 3:
+            time.sleep(15)
+    # All 4 attempts over ~45s failed → treat as a real, sustained outage.
+    print(f"[Health] Claude canary FAILED 4× over ~45s: {last_err}")
+    now = time.time()
+    if not _state["claude_failing"] or now - _state["last_claude_alert"] > _REALERT_SECS:
+        _state["last_claude_alert"] = now
+        _email("ALERT: Northline agent brain is DOWN (Claude API failing)",
+               f"The Claude canary failed 4 times over ~45s (sustained — not a transient blip):\n\n{last_err}\n\n"
+               f"Customers messaging the WhatsApp number are getting the canned holding "
+               f"reply, not Lily. If the error mentions credit balance, top up at "
+               f"console.anthropic.com → Plans & Billing (and turn on auto-reload).")
+    _state["claude_failing"] = True
+    return False
 
 
 def check_airtable() -> bool:
