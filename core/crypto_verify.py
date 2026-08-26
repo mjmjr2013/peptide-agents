@@ -31,6 +31,36 @@ def _get(url: str, timeout: int = 12) -> dict | list | None:
         return None
 
 
+# ── Amount matching (neighbour-aware, no misattribution) ─────────────────────
+# We match payments by AMOUNT on a shared address, so the ONLY safe auto-accept is
+# an UNAMBIGUOUS one: a received amount is auto-matched to an order iff (a) it is the
+# exact quoted unique amount and no other awaiting order is that close, OR (b) it lands
+# in this order's tolerance band AND in NO OTHER awaiting order's band. If two awaiting
+# orders are close enough that a payment could be either, it is NOT auto-matched — the
+# watcher's loose scan flags it for a human instead (never a wrong guess, at any volume).
+
+def _auto_ok(amt: float, expected: float, others, over_fn, under_fn, exact_tol: float) -> bool:
+    others = others or []
+    # (a) exact unique payer — the quoted amount, and no neighbour that close
+    if abs(amt - expected) <= exact_tol and all(abs(amt - o) > exact_tol for o in others):
+        return True
+    # (b) in this order's band, and not inside any OTHER awaiting order's band
+    if not (expected - under_fn(expected) <= amt <= expected + over_fn(expected)):
+        return False
+    return not any(o - under_fn(o) <= amt <= o + over_fn(o) for o in others)
+
+
+def _loose_ok(amt: float, expected: float, others, over: float, under: float) -> bool:
+    # Wide review band; closest-order guard so only the nearest order flags a near-miss.
+    if not (expected - under <= amt <= expected + over):
+        return False
+    return not any(abs(amt - o) < abs(amt - expected) for o in (others or []))
+
+
+def _usdt_over(x: float) -> float:
+    return max(x * 0.03, 20.0)  # auto-accept overpay: 3% of order, min $20
+
+
 # ── USDT (TRC20) ─────────────────────────────────────────────────────────────
 
 def verify_usdt(address: str, expected_usdt: float, since_unix: float,
@@ -90,11 +120,6 @@ def verify_btc(address: str, expected_btc: float, since_unix: float,
     txs = _get(f"https://mempool.space/api/address/{address}/txs")
     if not isinstance(txs, list):
         return None
-    tol_pct = 0.20 if loose else 0.02
-    over_pct = 0.40 if loose else 0.10
-    exp_sats = int(round(expected_btc * 1e8))
-    tol = max(int(exp_sats * tol_pct), 1000)
-    over = max(int(exp_sats * over_pct), tol)
     for tx in txs:
         st = tx.get("status", {})
         if not st.get("confirmed"):
@@ -104,13 +129,18 @@ def verify_btc(address: str, expected_btc: float, since_unix: float,
             continue
         received = sum(v.get("value", 0) for v in tx.get("vout", [])
                        if v.get("scriptpubkey_address") == address)
-        if not received or not (-tol <= received - exp_sats <= over):
+        if not received:
             continue
-        if any(abs(received - int(round(o * 1e8))) < abs(received - exp_sats)
-               for o in (other_amounts or [])):
-            continue  # another awaiting order is a closer match — not ours
-        return {"tx_hash": tx.get("txid"), "amount": round(received / 1e8, 8),
-                "over": round((received - exp_sats) / 1e8, 8), "ts": bt or time.time(), "coin": "BTC"}
+        amt = received / 1e8
+        if loose:
+            ok = _loose_ok(amt, expected_btc, other_amounts, expected_btc * 0.30, expected_btc * 0.20)
+        else:
+            ok = _auto_ok(amt, expected_btc, other_amounts,
+                          lambda x: x * 0.03, lambda x: x * 0.02, expected_btc * 0.003)
+        if not ok:
+            continue
+        return {"tx_hash": tx.get("txid"), "amount": round(amt, 8),
+                "over": round(amt - expected_btc, 8), "ts": bt or time.time(), "coin": "BTC"}
     return None
 
 
@@ -186,8 +216,6 @@ def verify_usdt_eth(address: str, expected_usdt: float, since_unix: float,
     if not key:
         print("[crypto] ETHERSCAN_API_KEY not set — cannot verify ERC-20 USDT")
         return None
-    under_tol = max(expected_usdt * 0.20, 5.0) if loose else 0.02
-    over_tol = max(expected_usdt * 0.40, 60.0) if loose else max(expected_usdt * 0.10, 30.0)
     url = (f"https://api.etherscan.io/v2/api?chainid=1&module=account&action=tokentx"
            f"&contractaddress={USDT_ERC20}&address={address}&page=1&offset=25&sort=desc&apikey={key}")
     d = _get(url)
@@ -204,10 +232,13 @@ def verify_usdt_eth(address: str, expected_usdt: float, since_unix: float,
             continue
         if ts < since_unix - 3600:
             continue
-        if not (expected_usdt - under_tol <= amt <= expected_usdt + over_tol):
+        if loose:
+            ok = _loose_ok(amt, expected_usdt, other_amounts,
+                           max(expected_usdt * 0.30, 60.0), max(expected_usdt * 0.20, 5.0))
+        else:
+            ok = _auto_ok(amt, expected_usdt, other_amounts, _usdt_over, lambda _x: 0.02, 0.05)
+        if not ok:
             continue
-        if any(abs(amt - o) < abs(amt - expected_usdt) for o in (other_amounts or [])):
-            continue  # another awaiting order is a closer match — not ours
         return {"tx_hash": tx.get("hash"), "amount": round(amt, 2),
                 "over": round(amt - expected_usdt, 2), "ts": ts, "coin": "USDT"}
     return None

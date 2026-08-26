@@ -131,15 +131,21 @@ class AirtableClient:
         import math
         used = {round(float(o["fields"].get("total_price") or 0), 2)
                 for o in self.get_awaiting_orders()}
+        # Keep every concurrent awaiting charge ≥ $0.10 apart (not just distinct), so an
+        # exact payer is always an UNAMBIGUOUS match even when two orders share a base price
+        # (the matcher's exact tolerance is $0.05).
+        def _clear(c: float) -> bool:
+            return all(abs(c - u) >= 0.10 for u in used)
         charge = round(base_usd, 2)
         if exact:
-            while charge in used:
+            while not _clear(charge):
                 charge = round(charge + 0.01, 2)
         else:
             base_dollars = float(math.ceil(charge))
+            charge = round(base_dollars + 0.01, 2)
             for cents in range(1, 100):
                 cand = round(base_dollars + cents / 100, 2)
-                if cand not in used:
+                if _clear(cand):
                     charge = cand
                     break
         if coin.upper() == "BTC":

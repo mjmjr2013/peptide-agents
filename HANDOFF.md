@@ -81,9 +81,13 @@ While waiting for confirmation, the agent replies with **varied, reassuring, coi
 - **BTC**, verified via **mempool.space** (no key); USD→BTC rate locked at quote (`usd_to_btc`), 1 confirmation.
 - Matching is by **amount** on a shared address, with a widened auto-accept band + a human-review
   **SAFETY NET** (2026-08-24, commit `922845e`, after TWO escalating overpay incidents):
-  - Auto-accept: USDT overpay up to `max(10% of expected, $30)`, underpay only −$0.02; BTC under 2% / over 10%.
-    A payment that ANOTHER awaiting order matches MORE closely is skipped (`other_amounts` closest-match guard,
-    fed from `get_awaiting_orders`), so overpay can't cross-claim.
+  - Auto-accept is **UNAMBIGUOUS-ONLY** (2026-08-24 pt.2, `_auto_ok`/`_loose_ok` in `crypto_verify`): a payment
+    auto-matches an order iff it is the exact quoted amount (±$0.05, no neighbour that close) OR it is in the
+    order's band AND in NO OTHER awaiting order's band. USDT band = overpay up to `max(3% of expected, $20)`,
+    underpay −$0.02; BTC = 2% under / 3% over. If two *concurrently-awaiting* orders are close enough that a
+    payment could be either, it is NOT auto-matched → the loose scan flags it for review. **Misattribution is
+    therefore impossible at any volume.** `allocate_unique_amount` also spaces concurrent charges ≥ $0.10 apart
+    (not just distinct) so exact payers of same-priced orders still auto-match.
   - Safety net: `agents/payment_watcher.py`, on no auto-match, reruns `verify_payment(..., loose=True)` (±20–40%);
     any plausible near-miss is emailed to ops (`report_emails` = jordan@/daniel@) ONCE and the order's new
     `payment_flagged` checkbox is set. **A received payment is never silently dropped again.**
