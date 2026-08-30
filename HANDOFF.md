@@ -649,6 +649,13 @@ resolves to an empty `from_`, throws, and is swallowed — silent failure that l
   Safe because Leads store phones as `whatsapp:+1...`, so every live send path takes the
   `twilio_whatsapp_from` branch. `SUPPLIER_WHATSAPP` lacks the prefix but is only ever an
   exclusion filter (`transcript_reviewer._excluded`), never a send target.
+- **`WAREHOUSE_WHATSAPP` DELETED.** It still held the FIRST warehouse rep's number
+  (`whatsapp:+8613418806654`) — the rep who ghosted us and is holding lost order 0F9D. It was the
+  fallback used only when `WAREHOUSE_EMAIL` is unset, so if that var were ever cleared, daily
+  manifests carrying customer names and addresses would have routed to a former contractor. The
+  fallback was also already known-broken (the July WhatsApp manifests were all `undelivered` — the
+  same 24h-window problem), so removing it costs nothing. `_send_whatsapp` guards on the empty
+  value and returns False with a log line; it cannot crash the scheduler.
 - **Twilio auto-recharge raised** to threshold $25 / reload $100 (was <$10 → $20). Reason: fixed
   costs were $18.30/mo against a $20 ceiling — no buffer. NOTE the recurring charges are pure
   number rental, NOT usage: $15.00 on the 16th (HK number), $1.15 on the 22nd, $2.15 on the 23rd.
