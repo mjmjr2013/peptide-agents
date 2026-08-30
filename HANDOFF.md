@@ -834,3 +834,32 @@ file — the prerequisite for the labeling-manifest and weight-based shipping wo
 - Agreed package split: **2 kg hard cap, self-imposed**, and *balanced* not greedy — `N = ceil(total
   / 2kg)`, then even out (3 kg → two ~1.5 kg packages, NOT 2.0 + 1.0). Do not hardcode a kit count;
   it falls out of the weights and changes with the mix.
+
+## 29a. §29 deployed (2026-08-29, commit `1aa2007f`)
+
+Built in Cowork, deployed from Claude Code on the Mac — the split CLAUDE.md now describes. Ran
+`deploy_catalog_fix.sh` unchanged (it is in the repo root, untracked; safe to delete now).
+
+- `tests/test_catalog_regression.py` — **173 passed** on the real tree before the commit.
+- Force-deployed by SHA and confirmed the RUNNING commit is `1aa2007f`, not just that the deploy
+  reported SUCCESS (§10). `/health` → 200.
+- Independently re-checked the live failure modes against the fixed code:
+  both KLOW spellings price at $220/kit with SKU `KLOW`; `CJC+Ipa Blend` quoted at $20 now clamps
+  to $108 (`clamped=True`) instead of passing through; bare-spec `DSIP 10mg` resolves to `DS10`;
+  `Sermorelin Acetate 5mg` → $90 (`SMO5`); an unresolvable product yields `items=0, unpriced=1` and
+  escalates instead of selling.
+
+**`pytest` is NOT installed on Jordan's Mac and is NOT in `requirements.txt`.** Installed it with
+`python3 -m pip install --user pytest` (user site, so it stays out of the Railway image). Anyone
+running the suite for the first time needs that one line. Left out of `requirements.txt` deliberately
+— it is a dev-only dependency and the deploy does not need it.
+
+**Still open from §29, unchanged by this deploy:** the smoke test through a real WhatsApp number has
+not been run (needs a non-operator handset — see the script's closing banner); Daniel's lab check on
+the Sermorelin cost is still outstanding, and if $37.24 is current then SMO5/SMO10 are selling under
+floor; `website/coa.html` still holds a third hardcoded catalog; colloquial names (`Glow`, `Klow`,
+`MT2`, `Wolverine`) are still not in the alias table; the bac-water shipping-weight hole is untouched.
+
+⚠️ **The `origin` remote URL has a GitHub personal access token embedded in it** (`git remote -v`
+prints it in the clear, and so does any tool output that includes it). Nothing here changed that, but
+it should be rotated and moved to a credential helper.

@@ -19,6 +19,28 @@ HEAD against the last commit that touched `HANDOFF.md`. If it told you at startu
 landed since, updating the handoff is part of this session's work — record WHY, not just what. It
 goes quiet once the handoff is current.
 
+## Which tool to use on this machine (read before planning any shell work)
+
+**Jordan's MacBook Pro is Intel (x64).** Cowork's local Linux sandbox requires Apple Silicon (M1 or
+later), so in a **Cowork** session `device_bash` ALWAYS fails with *"Workspace unavailable — the
+isolated Linux environment on this device failed to start."* This is a hardware requirement, not a
+transient fault. Restarting the app does not help. Do not retry it, and do not ask Jordan to restart.
+
+What still works in Cowork: reading and listing his files, staging them into the cloud container,
+running code THERE (python3 is available; there is no network to github.com, railway.app or PyPI),
+and writing files back with `device_commit_files`. That is enough to read this repo, write and test a
+fix, and land the files on his Mac — a full catalog fix was done that way on 2026-08-30 (§29).
+
+What CANNOT be done from Cowork: anything that must execute on his Mac — `git` (commit, push),
+`pytest` against the real tree, the Railway deploy, the Railway CLI in `~/.railway`. Computer use
+cannot substitute: terminals resolve **click-tier only**, so an agent can see a terminal but cannot
+type into one.
+
+**So: build in Cowork, deploy in Claude Code.** Claude Code runs its shell natively on the Mac (no VM,
+so Intel is fine) and is the tool for git, tests and deploys. Jordan is not a coder — do not hand him
+a list of commands and call it done. Either do it in Claude Code, or leave a single runnable script
+and tell him the one line to paste.
+
 ## Hard-won rules
 
 - **Consoles lie — verify through the API.** A Twilio sender can read ONLINE with an empty webhook
