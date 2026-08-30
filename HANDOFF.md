@@ -9,10 +9,8 @@ large-order escalations alerted NOBODY and then ghosted the prospect. §28 also 
 tracking-template swap, Daniel's new email, the Twilio number cleanup, and a full audit marking
 several §14 items verified-resolved (DIEGO26 DID run end to end; HK bundle approved).
 
-⚠️ **The live fulfillment backlog is the top open item: three paid orders with no tracking, two of
-them 4+ weeks old** (§28, "Still open"). Earlier context: the 2026-08-19 session built the
-promo-code deal system (§24), white labelling (§25), switched the warehouse to **Jason** (§23),
-and set the **WhatsApp profile picture** (§26).
+Earlier context: the 2026-08-19 session built the promo-code deal system (§24), white labelling
+(§25), switched the warehouse to **Jason** (§23), and set the **WhatsApp profile picture** (§26).
 
 Earlier context: the **live BTC end-to-end test SUCCEEDED** (Daniel bought bac water, paid real BTC,
 verified on-chain, address collected, warehouse pinged — order NL-20260704-0F9D). Two prod bugs were
@@ -665,10 +663,21 @@ resolves to an empty `from_`, throws, and is swallowed — silent failure that l
   urgent than §14 implies, but still the table that will hit the cap first.
 
 ### Still open after this session
-- 🔴 **Fulfillment backlog — 3 paid orders parked.** `NL-20260704-0F9D` (paid Jul 3, `in_bulk_order`,
-  NO tracking, 8 weeks) and `NL-20260808-D4C1` (paid Aug 2, same, 4 weeks) — both `legacy_warehouse`,
-  i.e. they predate the Jason switch and fell through it. `NL-20260829-B84A` (paid Aug 26) is still
-  at `recorded` with the address collected. Customers have paid and have no tracking.
+- ✅ **The two old "parked" orders are CLOSED business — do not re-flag them.** Their Airtable
+  records were deliberately LEFT AS-IS (both still read `in_bulk_order` with no tracking), because
+  both predate Jason and their real outcomes are known:
+    - `NL-20260704-0F9D` (paid Jul 3) — shipped by the FIRST warehouse rep, who then ghosted us.
+      **Written off as lost**; assume it is not coming. No `lost` option was added to the
+      `fulfillment_status` single-select — deliberately, to avoid a schema change for dead history.
+    - `NL-20260808-D4C1` (paid Aug 2) — **shipped and RECEIVED by the customer.** Fulfilled by a
+      third warehouse vendor we were trialling and no longer use; they never entered tracking in
+      our system, which is why the record looks incomplete.
+  Both carry `legacy_warehouse=True`, so they are already excluded from Jason's manifest and need
+  no cleanup. The stale-looking records are expected — treat them as historical, not a backlog.
+- 🟡 **`NL-20260829-B84A` (paid Aug 26) is the one LIVE order awaiting shipment** — at `recorded`,
+  address collected, correctly appearing on Jason's manifest alongside `DDD6` (which still needs a
+  vial photo). Jason IS receiving the daily manifest email; he is new to the cadence and is being
+  coached through the process. Not a technical fault — verified the manifest query returns both.
 - 🟡 `WAREHOUSE_WHATSAPP` still points at the OLD rep (`+8613418806654`), not Jason. Fallback-only
   (used if `WAREHOUSE_EMAIL` is unset), but if that ever happens, manifests with customer names and
   addresses route to a former contractor.
