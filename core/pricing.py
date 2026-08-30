@@ -72,9 +72,6 @@ CATALOG: list[dict] = [
     {"product": "PT-141", "spec": "10mg x10", "cost": 11.86},
     {"product": "Sermorelin", "spec": "5mg x10", "cost": 14.90},
     {"product": "Sermorelin", "spec": "10mg x10", "cost": 19.72},
-    {"product": "Sermorelin Acetate", "spec": "2mg x10", "cost": 20.69},
-    {"product": "Sermorelin Acetate", "spec": "5mg x10", "cost": 37.24},
-    {"product": "Sermorelin Acetate", "spec": "10mg x10", "cost": 66.21},
     {"product": "GHRP-2", "spec": "5mg x10", "cost": 5.52},
     {"product": "GHRP-2", "spec": "10mg x10", "cost": 9.66},
     {"product": "GHRP-6", "spec": "5mg x10", "cost": 6.21},
@@ -141,9 +138,9 @@ CATALOG: list[dict] = [
     {"product": "Matrixyl", "spec": "10mg x10", "cost": 13.52},
     {"product": "Pinealon", "spec": "5mg x10", "cost": 12.41},
     {"product": "Pinealon", "spec": "10mg x10", "cost": 20.69},
-    {"product": "DSIP", "spec": "2mg", "cost": 6.21},
-    {"product": "DSIP", "spec": "5mg", "cost": 9.52},
-    {"product": "DSIP", "spec": "10mg", "cost": 17.24},
+    {"product": "DSIP", "spec": "2mg x10", "cost": 6.21},
+    {"product": "DSIP", "spec": "5mg x10", "cost": 9.52},
+    {"product": "DSIP", "spec": "10mg x10", "cost": 17.24},
     {"product": "Adipotide", "spec": "2mg x10", "cost": 14.21},
     {"product": "Adipotide", "spec": "5mg x10", "cost": 27.59},
     {"product": "Ara-290", "spec": "10mg x10", "cost": 24.83},
@@ -183,16 +180,28 @@ def _norm(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", (s or "").lower())
 
 
+from core.aliases import canon as _canon_product
+
+
+def _norm_product(s: str) -> str:
+    """Normalize a PRODUCT name, folding known alternate spellings together.
+
+    Separate from _norm (which also normalizes specs) so the alias table is only
+    ever consulted for product names. See core/aliases.py for why this exists.
+    """
+    return _canon_product(s)
+
+
 def find_item(product: str, spec: str = "") -> dict | None:
     """Best-effort match of a Claude-supplied product/spec to a CATALOG row.
     Returns the matching dict or None if it can't be confidently matched."""
-    np = _norm(product)
+    np = _norm_product(product)
     if not np:
         return None
-    candidates = [it for it in CATALOG if _norm(it["product"]) == np]
+    candidates = [it for it in CATALOG if _norm_product(it["product"]) == np]
     if not candidates:
         candidates = [it for it in CATALOG
-                      if np in _norm(it["product"]) or _norm(it["product"]) in np]
+                      if np in _norm_product(it["product"]) or _norm_product(it["product"]) in np]
     nspec = _norm(spec)
     if nspec:
         for it in candidates:  # catalog order: smaller doses first, so prefix match is safe

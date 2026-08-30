@@ -198,8 +198,18 @@ CATEGORIES = [
 import re as _re
 
 
+from core.aliases import canon as _canon_product
+
+
 def _norm_product(s: str) -> str:
-    return _re.sub(r"[^a-z0-9]", "", (s or "").lower())
+    """Normalized product key for the price/SKU indexes.
+
+    Routed through core.aliases.canon so a product spelled one way here and
+    another way in core/pricing.py resolves to the same index entry. Before this,
+    five products (GLOW70, KLOW, CD5, CP10, MIC10) had a name that worked for
+    get_sku() but not get_list_price(), or vice versa — never both.
+    """
+    return _canon_product(s)
 
 
 def _norm_dose(s: str) -> str:

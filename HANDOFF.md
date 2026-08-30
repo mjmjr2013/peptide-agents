@@ -4,7 +4,12 @@ Paste this into a fresh Claude Code session (run from `~/peptide-agents`) to con
 It describes the live WhatsApp sales agent, the new order/payment/fulfillment system,
 how to deploy/debug, and what's outstanding. No secret tokens are stored here.
 
-**Last updated 2026-08-29. Read §28 FIRST — it is the newest and it fixes a silent revenue leak:**
+**Last updated 2026-08-30. Read §29 FIRST — it is the newest.** §29 fixes a silent revenue leak of a
+different kind from §28: catalog name drift left five SKUs unpriceable, and an unpriceable line
+skipped the ENTIRE price guard — a missing unit_price shipped the kits free. Fixed by failing closed
+plus an alias layer; proven price-neutral by `tests/test_catalog_regression.py`.
+
+Before that, §28 fixed a silent revenue leak:
 large-order escalations alerted NOBODY and then ghosted the prospect. §28 also records the
 tracking-template swap, Daniel's new email, the Twilio number cleanup, and a full audit marking
 several §14 items verified-resolved (DIEGO26 DID run end to end; HK bundle approved).
@@ -743,3 +748,89 @@ still knows the handoff is its job.
 
 **So the workflow is: just work. The handoff keeps itself honest.** If a session ends without the
 handoff being updated, the next one is told immediately and fixes it.
+
+## 29. Catalog drift → unpriced lines shipped FREE (2026-08-30) — FIXED
+
+**The bug.** Five products were spelled differently in `core/pricing.py` (the cost basis) and
+`core/price_image.py` (the customer price sheet). Neither name worked for both lookups:
+`get_list_price()` only resolved the pricing.py spelling, `get_sku()` only the price_image.py one.
+
+| SKU | price sheet spelling | cost-file spelling |
+|---|---|---|
+| `GLOW70` | BPC+TB+GHK Blend | BPC+GHK-Cu+TB Blend |
+| `KLOW` | BPC+TB+GHK+KPV | BPC+TB+GHK-Cu+KPV Blend |
+| `CD5` | CJC-1295 (w/ DAC) | CJC-1295 (with DAC) |
+| `CP10` | CJC+Ipa Blend | CJC+Ipamorelin Blend |
+| `MIC10` | MIC (Lipo+B12) | MIC (Lipo-C+B12) |
+
+**Why it cost money.** The whole clamp in `_validate_line_items` was wrapped in
+`if list_pk is not None:`. An unresolvable line therefore skipped the floor check, the discount cap,
+AND the `if unit <= 0: unit = list_pk` backfill *together*. Two live failure modes:
+- Lily quotes below cost → passed through unclamped (verified: `CJC+Ipa Blend` sold at $20 vs a
+  $56.70 floor, `clamped=False`).
+- Lily omits `unit_price` → **line_total $0.00 and the kits ship free.**
+
+`core/deals.py` uses the price-sheet spellings, so three DIEGO26 lines were in this state.
+
+**It was a class of bug, not five instances.** Fuzzing 930 plausible product/spec spellings drawn
+from our own live price sheet found **36 failures across 8 SKUs via two unrelated root causes** —
+the name drift above, plus `DSIP`, whose rows were the only ones in `CATALOG` written without the
+` x10` spec suffix (`find_item` matches specs by prefix, so `"10mg x10"` never matched a bare
+`"10mg"` row, three candidates tied, and it returned `None`). Lily writes these strings freely, so
+the input space cannot be enumerated.
+
+**The four fixes (one commit).**
+1. **Fail closed** — `_validate_line_items` now returns `(items, clamped, unpriced)` and EXCLUDES
+   unpriceable lines from `items`. Both call sites escalate via `_enter_manual_mode()` — the same
+   path the large-order handoff uses (§28) — so the buyer gets a warm stall, an operator is alerted,
+   and no order is ever built from a partial basket. **This is the fix that matters**: it covers
+   every case not yet found, including products added later.
+2. **`core/aliases.py` (new)** — one `canon()` both `pricing.py` and `price_image.py` normalize
+   product names through. Deliberately an ALIAS LAYER, not a rename: `price_image.CATEGORIES` drives
+   the customer price-list image/XLSX/PDF and `pricing.CATALOG` names are injected into Lily's prompt
+   by `get_catalog_text()`, so renaming either side would change text a real buyer sees. **No
+   displayed string changed.** Unknown products pass through unchanged, so the table cannot break a
+   product it does not know about.
+3. **DSIP specs** normalized to the standard `"Nmg x10"` form.
+4. **Sermorelin collapsed to one cost basis.** `CATALOG` carried both `Sermorelin`
+   (5mg cost $14.90 → $90) and `Sermorelin Acetate` (5mg cost $37.24 → $224) — the same product
+   (acetate is just the salt form), 2.5x apart. The cheap rows are correct: the sheet prices ARE
+   derived from them (`ceil(14.90*6)=90`, `ceil(19.72*6)=119` = SMO5/SMO10), $19.72/10mg fits its
+   class (CJC-1295 no-DAC 10mg $26.21), and pricing off the Acetate rows would have put SMO5 at
+   **2.4x cost — below the 3x floor the guard exists to enforce**. The Acetate rows are removed; the
+   name still resolves via the alias, now to $90/$119.
+   - ⚠️ **This one is provisional.** Daniel is checking the real cost with the lab. If $37.24 turns
+     out to be current, the *sheet* is what's wrong and SMO5/SMO10 have been selling under floor.
+   - Side effect: this dropped the only 2mg row. 2mg is not on the price sheet and is not sold;
+     a request for it now escalates to a human (fix 1) rather than shipping free.
+
+**Verification — `tests/test_catalog_regression.py`, 173 assertions, all passing.**
+- **No customer price moved.** Every one of the 155 sheet SKUs was priced before and after and
+  diffed: **0 moved**, 5 went from `None` → exactly their sheet value, 5 gained a floor.
+- Re-fuzzed: **0 of 930** spellings now price at `None` (was 36).
+- The guard was tested by lifting the REAL patched `_validate_line_items` out of
+  `agents/messaging_agent.py` via `ast` and running it against the real pricing module — not a
+  reimplementation. An unresolvable line yields `items=0, unpriced=1`; a mixed basket with one good
+  and one bad line stops the whole order.
+- `test_no_sheet_price_is_below_its_own_floor` is what caught the Sermorelin problem. Keep it.
+
+**One new customer-visible string** (per CLAUDE.md, Jordan approved building this; the copy itself is
+worth a second look): *"Let me confirm the exact price on this one with my boss, dear — one moment,
+I come right back to you."*
+
+**Not yet done.** This was step one of consolidating the catalog into a single SKU-keyed source of
+truth carrying product, mg, class (lyophilized vs liquid), price, `unit_weight_g`, box dims and label
+file — the prerequisite for the labeling-manifest and weight-based shipping work. Still open there:
+- `website/coa.html` holds a THIRD hardcoded copy of the catalog with its own spellings
+  (`GLOW 70`, `KLOW 80`, `Melanotan II (MT2)`, `BPC-157 + TB-500 (Wolverine)`). Aliased for the
+  five known cases; the rest are unaudited.
+- Colloquial names customers actually type (`Glow`, `Klow`, `MT2`, `Wolverine`) are documented in
+  Lily's prompt but are NOT in the alias table yet.
+- **Bac water is the shipping trap.** `BAC10` is ~250 g/kit against ~75 g for a lyophilized kit, at
+  $12 list — roughly $48/kg of value against ~$11,920/kg for `RT100`. `_shipping_fee()` gives free
+  shipping over a $1,000 subtotal with **no weight term**, so ~84 bac water kits = $1,008 = free
+  shipping on ~21 kg. `STW10` (Sterile Water) is identical and `LC216`/`MIC10` are also liquid — fix
+  it as a liquid/supplies CLASS on the consolidated catalog, never as a `BAC10` special case.
+- Agreed package split: **2 kg hard cap, self-imposed**, and *balanced* not greedy — `N = ceil(total
+  / 2kg)`, then even out (3 kg → two ~1.5 kg packages, NOT 2.0 + 1.0). Do not hardcode a kit count;
+  it falls out of the weights and changes with the mix.

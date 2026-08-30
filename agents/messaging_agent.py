@@ -441,10 +441,30 @@ def _parse_address(text: str) -> dict:
         return {}
 
 
-def _validate_line_items(line_items: list[dict]) -> tuple[list[dict], bool]:
+def _validate_line_items(line_items: list[dict]) -> tuple[list[dict], bool, list[dict]]:
     """Build clean line items; clamp any unit price up to the floor/cap minimum.
-    Returns (items, clamped) where clamped=True if any price was raised."""
-    items, clamped = [], False
+
+    Returns (items, clamped, unpriced):
+      items    — validated lines, safe to sell
+      clamped  — True if any price was raised to the allowed minimum
+      unpriced — lines whose product/spec could not be resolved to a price AT ALL
+
+    FAIL CLOSED (2026-08-30). An unresolvable line used to fall straight through
+    this function: the clamp below is guarded by `if list_pk is not None`, so a
+    line with no list price skipped the floor check, the discount cap, AND the
+    `if unit <= 0: unit = list_pk` backfill together. A quote below cost passed
+    unchanged, and a line with no unit_price priced at $0.00 and shipped free.
+
+    That was not a hypothetical: 3.9% of plausible product/spec spellings drawn
+    from our own live price sheet resolved to None, across 8 SKUs and via two
+    unrelated root causes (name drift, and DSIP's non-standard spec format).
+    Lily writes these strings freely, so the input space cannot be enumerated —
+    the only safe move is to refuse the line and let a human price it.
+
+    Unpriced lines are now EXCLUDED from `items` so they can never reach an
+    order; the caller escalates them to manual mode.
+    """
+    items, clamped, unpriced = [], False, []
     for li in line_items or []:
         product = (li.get("product") or "").strip()
         spec = (li.get("spec") or "").strip()
@@ -460,23 +480,29 @@ def _validate_line_items(line_items: list[dict]) -> tuple[list[dict], bool]:
             unit = float(li.get("unit_price") or 0)
         except (TypeError, ValueError):
             unit = 0.0
-        if list_pk is not None:
-            if unit <= 0:
-                unit = list_pk
-            cap = max_discount_for_qty(kits)
-            # Discount bound rounds DOWN to the whole dollar Claude (and any human)
-            # naturally quotes: 5% off $95 = $90.25 → $90 is allowed. Rounding this
-            # UP made the validator fight Lily's own quoted price by $1 and loop a
-            # canned override at a customer (2026-08-01). Hard cost floor still
-            # rounds up — never sell below 3x cost.
-            min_pk = max(math.ceil(floor_pk or 0), math.floor(list_pk * (1 - cap)))
-            if unit < min_pk - 0.001:
-                unit = float(min_pk)
-                clamped = True
+        if list_pk is None:
+            # Cannot resolve a price for this product/spec. Refuse the line rather
+            # than letting it through unguarded — see the docstring. Never sell
+            # what we cannot price.
+            print(f"[Guardrail] UNPRICED line refused: {product!r} spec={spec!r} kits={kits}")
+            unpriced.append({"product": product, "spec": spec, "kits": kits})
+            continue
+        if unit <= 0:
+            unit = list_pk
+        cap = max_discount_for_qty(kits)
+        # Discount bound rounds DOWN to the whole dollar Claude (and any human)
+        # naturally quotes: 5% off $95 = $90.25 → $90 is allowed. Rounding this
+        # UP made the validator fight Lily's own quoted price by $1 and loop a
+        # canned override at a customer (2026-08-01). Hard cost floor still
+        # rounds up — never sell below 3x cost.
+        min_pk = max(math.ceil(floor_pk or 0), math.floor(list_pk * (1 - cap)))
+        if unit < min_pk - 0.001:
+            unit = float(min_pk)
+            clamped = True
         unit = round(unit, 2)
         items.append({"product": product, "spec": spec, "kits": kits, "unit_price": unit,
                       "line_total": round(unit * kits, 2), "sku": get_sku(product, spec)})
-    return items, clamped
+    return items, clamped, unpriced
 
 
 def _shipping_fee(shipping: str, product_subtotal: float) -> int:
@@ -1581,7 +1607,18 @@ def _handle_ordering(phone: str, conversation: list[dict], existing_lead: dict |
     # via an internal note and let it re-state the offer naturally, in-voice,
     # consistent with what the customer has already been told.
     if action in ("place", "confirm"):
-        items, clamped = _validate_line_items(line_items)
+        items, clamped, unpriced = _validate_line_items(line_items)
+        # Fail closed: a line we cannot price must never reach an order. Hand the
+        # whole conversation to a human via the SAME manual-mode path the large-order
+        # handoff uses, so the buyer gets a warm stall instead of an error — and so
+        # nobody can be quoted $0 for a product whose name we failed to resolve.
+        if unpriced:
+            bad = "; ".join(f"{u['kits']}x {u['product']} {u['spec']}".strip() for u in unpriced)
+            print(f"[Guardrail] UNPRICED line(s) for {phone} — escalating to manual mode: {bad}")
+            u0 = unpriced[0]
+            _enter_manual_mode(phone, u0["product"], u0["spec"], u0["kits"], conversation)
+            return ("Let me confirm the exact price on this one with my boss, dear — "
+                    "one moment, I come right back to you.")
         if clamped and items:
             mins = "; ".join(f"{i['product']} {i['spec']}: ${int(i['unit_price'])}/kit"
                              for i in items)
@@ -1609,7 +1646,16 @@ def _handle_ordering(phone: str, conversation: list[dict], existing_lead: dict |
 
     # Finalize → create a pending order (awaiting payment) and send payment instructions
     if action == "place":
-        items, _ = _validate_line_items(line_items)
+        items, _, unpriced = _validate_line_items(line_items)
+        # Defence in depth. The ("place","confirm") block above already escalates
+        # and returns, so this should be unreachable — but never build an order
+        # from a partial basket if it ever is.
+        if unpriced:
+            u0 = unpriced[0]
+            print(f"[Guardrail] UNPRICED line reached the place path for {phone}: {unpriced!r}")
+            _enter_manual_mode(phone, u0["product"], u0["spec"], u0["kits"], conversation)
+            return ("Let me confirm the exact price on this one with my boss, dear — "
+                    "one moment, I come right back to you.")
         if not items:
             return reply or "What product and how many kits would you like, dear?"
         if coin not in ("USDT", "BTC"):
