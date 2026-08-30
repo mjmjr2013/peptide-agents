@@ -593,12 +593,26 @@ def _send_to_prospect(phone: str, text: str) -> None:
 
 
 def _notify_operators(text: str) -> None:
-    """Alert all configured operators. Logs (and no-ops) if none are set."""
-    nums = settings.operator_numbers
-    if not nums:
-        print(f"[Operator] OPERATOR_NUMBERS not set — would have alerted: {text}")
-        return
-    for dest in nums:
+    """Alert the humans who supervise large orders.
+
+    EMAIL IS THE PRIMARY TRANSPORT and always fires. Freeform WhatsApp only delivers
+    inside the recipient's 24h window (error 63016), so an operator who had not just
+    messaged us would never be told — the send throws and the except below swallows it,
+    leaving the prospect frozen in `manual` with nobody watching. That is the same class
+    of silent drop that lost the July warehouse manifests, so alerts go by email, which
+    has no window. WhatsApp is a best-effort EXTRA for any OPERATOR_NUMBERS that are set.
+    """
+    subject = (text.strip().splitlines() or ["Large order"])[0][:120]
+    try:
+        from agents.weekly_report import _send_email
+        sent = _send_email(f"[Northline] {subject}", text, [],
+                           recipients=settings.operator_emails)
+        if not sent:
+            print(f"[Operator] alert email NOT sent — would have alerted: {text}")
+    except Exception as e:
+        print(f"[Operator] alert email failed: {e!r} — would have alerted: {text}")
+
+    for dest in settings.operator_numbers:
         try:
             from_number = settings.twilio_whatsapp_from if "whatsapp" in dest else settings.twilio_phone_number
             msg = twilio_client.messages.create(body=text, from_=from_number, to=dest)

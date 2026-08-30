@@ -100,6 +100,17 @@ class Settings:
         n.strip() for n in os.environ.get("OPERATOR_NUMBERS", "").split(",") if n.strip()
     ]
 
+    # Where large-order alerts are EMAILED. Email is the PRIMARY operator transport:
+    # freeform WhatsApp only delivers inside the recipient's 24h window (error 63016),
+    # so an operator who has not just messaged us would never be told — the alert would
+    # throw and be swallowed. Email has no window. Defaults to REPORT_EMAIL so alerts
+    # reach the team even if OPERATOR_EMAIL is never set. Comma-separated.
+    operator_emails: list[str] = [
+        e.strip() for e in os.environ.get("OPERATOR_EMAIL", "").split(",") if e.strip()
+    ] or [
+        e.strip() for e in (os.environ.get("REPORT_EMAIL", "") or os.environ.get("GMAIL_USER", "")).split(",") if e.strip()
+    ]
+
     # WhatsApp approved message templates (Twilio Content SIDs). WhatsApp blocks
     # freeform business messages sent >24h after the customer's last message
     # (error 63016) — these pre-approved templates are the official mechanism for

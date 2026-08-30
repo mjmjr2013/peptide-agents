@@ -4,11 +4,15 @@ Paste this into a fresh Claude Code session (run from `~/peptide-agents`) to con
 It describes the live WhatsApp sales agent, the new order/payment/fulfillment system,
 how to deploy/debug, and what's outstanding. No secret tokens are stored here.
 
-**Last updated 2026-08-19, deployed at `a7a91e6` (SUCCESS, `/health` ok).** That session built the
-**pre-approved promo-code deal system** for the DIEGO26 group order (§24), **white labelling as a
-standing service** with the label-factory hand-off (§25), switched the warehouse to **Jason** (§23),
-and set the **WhatsApp profile picture** (§26). Read §23–§26 first — they are the newest and the
-DIEGO26 customer is expected imminently.
+**Last updated 2026-08-29. Read §28 FIRST — it is the newest and it fixes a silent revenue leak:**
+large-order escalations alerted NOBODY and then ghosted the prospect. §28 also records the
+tracking-template swap, Daniel's new email, the Twilio number cleanup, and a full audit marking
+several §14 items verified-resolved (DIEGO26 DID run end to end; HK bundle approved).
+
+⚠️ **The live fulfillment backlog is the top open item: three paid orders with no tracking, two of
+them 4+ weeks old** (§28, "Still open"). Earlier context: the 2026-08-19 session built the
+promo-code deal system (§24), white labelling (§25), switched the warehouse to **Jason** (§23),
+and set the **WhatsApp profile picture** (§26).
 
 Earlier context: the **live BTC end-to-end test SUCCEEDED** (Daniel bought bac water, paid real BTC,
 verified on-chain, address collected, warehouse pinged — order NL-20260704-0F9D). Two prod bugs were
@@ -130,7 +134,7 @@ processed once per cadence:
   per SKU (NO names/addresses/prices) → **email** → set `bulk_ordered`. Fires **Sunday 00:00 Mountain** (week =
   Sun 00:00 → Sat 23:59; last order Sat 11:59pm). Brother forwards it to the supplier himself.
 - Email delivery: **Gmail SMTP** (Google Workspace) — `GMAIL_USER`/`GMAIL_APP_PASSWORD`, sent to the
-  comma-separated `REPORT_EMAIL` (jordan@northlinesupplies.com + danielmcwilliams62881@gmail.com).
+  comma-separated `REPORT_EMAIL` (jordan@northlinesupplies.com + daniel@northlinesupplies.com).
   SendGrid was **retired** (the merged Twilio Email console gated everything behind domain auth).
 - Scheduler runs in-process in the webhook app (`run_report_scheduler`, checks every 5 min, guarded once/day & once/week).
 - The same scheduler runs the **health monitor** (`agents/health_monitor.py`): HOURLY Claude canary
@@ -210,7 +214,7 @@ stage (tracking-number stage shipped as §18).
 - `ETHERSCAN_API_KEY` set (verifies USDT).
 - `BTC_ADDRESS` = `bc1qxpdqaksmz6uaz5ftfum8y8cmujtzc2xuwaea5p` (BTC accepted; both coins offered).
 - `GMAIL_USER` = jordan@northlinesupplies.com, `GMAIL_APP_PASSWORD` set (weekly report email via Gmail SMTP).
-- `REPORT_EMAIL` = jordan@northlinesupplies.com,danielmcwilliams62881@gmail.com (weekly report recipients).
+- `REPORT_EMAIL` = jordan@northlinesupplies.com,daniel@northlinesupplies.com (weekly report recipients).
 - `WAREHOUSE_WHATSAPP` = `whatsapp:+8613418806654`, `DAILY_MANIFEST_HOUR` = 0 (midnight Mountain).
 - `WAREHOUSE_EMAIL` = `ybgjwl888@outlook.com` — the daily manifest is emailed here (WhatsApp is only
   a fallback if this is ever unset). Live-tested 2026-07-05: real manifest email delivered via Gmail SMTP.
@@ -600,3 +604,81 @@ watcher/instructions). ETH/USDT per-order adds the sweeping/gas operational piec
 for this volume (auto-accept common cases; email on anything unusual). Move to per-order addresses only if
 payment reliability must be absolute — start with **BTC via xpub**, keep USDT on the (now-fixed) shared address
 unless we also move USDT to Tron/Solana.
+
+## 28. Operator alerts fixed + audit (2026-08-29)
+**The bug: a >100-kit prospect was a SILENT dead end.** `_enter_manual_mode` sets stage `manual`,
+tells the customer "I must check with my boss, one moment", and calls `_notify_operators`. That
+function early-returned when `OPERATOR_NUMBERS` was unset (it was), printing "would have alerted"
+to stdout and nothing else. Meanwhile `messaging_agent.py` (stage `manual`) returns `""` for every
+subsequent inbound — Lily goes **completely silent**. So the single highest-value prospect type
+(100+ kits, negotiating below cap) got stalled and then ghosted, with no alert to anyone.
+
+**Two failure layers, both fixed:**
+1. `OPERATOR_NUMBERS` empty → no alert at all.
+2. Even set, it would NOT have worked: `_notify_operators` sent **freeform** WhatsApp with no
+   window check. Freeform only delivers inside the recipient's 24h window (error 63016); an
+   operator who had not just messaged us throws, and the `except` swallows it. Same silent-drop
+   class that lost the July warehouse manifests.
+
+**Fix (this session):** `_notify_operators` is now **EMAIL-FIRST and email always fires** — new
+`OPERATOR_EMAIL` setting, defaulting to `REPORT_EMAIL` (then `GMAIL_USER`), so alerts reach the
+team even if nobody sets it. WhatsApp is a best-effort extra for any `OPERATOR_NUMBERS`. Email has
+no 24h window and needs no template approval.
+
+⚠️ **`OPERATOR_NUMBERS` is deliberately EMPTY and should stay that way for now.** Jordan
+(+14805893947) and Daniel (+14806366814) both want their numbers free for test orders — and
+`_is_operator` is checked at the TOP of `handle_inbound`, BEFORE conversation/stage handling, so
+any number listed there can never behave as a customer again. Daniel's number in particular has
+**249 messages** and is the primary live test line (it placed B84A).
+**CONSEQUENCE — know this:** with no operator number set, you get NOTIFIED by email but cannot
+relay/`release` through the system (those are inbound-WhatsApp commands from a recognized operator).
+The prospect stays frozen in `manual` until a human contacts them out-of-band, or a redeploy wipes
+the in-memory `_lead_stage`. If you ever want in-system relay back, add a THIRD number as the
+operator line — never Jordan's or Daniel's.
+⚠️ If you do set `OPERATOR_NUMBERS`, entries MUST carry the `whatsapp:` prefix
+(`whatsapp:+1480...`). `TWILIO_PHONE_NUMBER` was deleted this session, so a bare number now
+resolves to an empty `from_`, throws, and is swallowed — silent failure that looks configured.
+
+### Other changes this session (2026-08-29)
+- `TRACKING_CONTENT_SID` → `HX562f612553f60b54cf12ed9feaa586f8` (`northline_tracking_booked`, now
+  APPROVED). Customers previously got "your order **has shipped**" while `fulfillment_status` was
+  only `labeled` — the DIEGO26 customer got that on 2026-08-27. Now correctly says "shipment is
+  **booked**". Both templates take one variable ({{1}} = tracking), so it was a drop-in.
+- **Daniel's email switched everywhere** gmail → `daniel@northlinesupplies.com` (`REPORT_EMAIL`,
+  `MANIFEST_CC`, this doc).
+- **Twilio numbers released**: `+15014178514` and `+18774692290` (both unused, $3.30/mo). Only
+  `+85292909474` remains. `TWILIO_PHONE_NUMBER` (which held the released toll-free) was DELETED.
+  Safe because Leads store phones as `whatsapp:+1...`, so every live send path takes the
+  `twilio_whatsapp_from` branch. `SUPPLIER_WHATSAPP` lacks the prefix but is only ever an
+  exclusion filter (`transcript_reviewer._excluded`), never a send target.
+- **Twilio auto-recharge raised** to threshold $25 / reload $100 (was <$10 → $20). Reason: fixed
+  costs were $18.30/mo against a $20 ceiling — no buffer. NOTE the recurring charges are pure
+  number rental, NOT usage: $15.00 on the 16th (HK number), $1.15 on the 22nd, $2.15 on the 23rd.
+  Actual messaging is ~$1/mo. After the releases, fixed cost should drop to ~$15/mo.
+
+### Verified-resolved (were listed open in §14)
+- HK regulatory bundle is **`twilio-approved`** (was pending-review).
+- Orphaned Orders `status` field is **deleted**.
+- **DIEGO26 ran end to end for real**: `NL-20260822-DDD6`, $3,393.64 USDT paid 2026-08-19,
+  `factory_notified=True`, tracking `ZS23651014299` sent. The artwork + factory path is proven.
+- Airtable usage is **350/1000** (Messages 312) — ~26 msgs/week, so ~6 months of headroom. Less
+  urgent than §14 implies, but still the table that will hit the cap first.
+
+### Still open after this session
+- 🔴 **Fulfillment backlog — 3 paid orders parked.** `NL-20260704-0F9D` (paid Jul 3, `in_bulk_order`,
+  NO tracking, 8 weeks) and `NL-20260808-D4C1` (paid Aug 2, same, 4 weeks) — both `legacy_warehouse`,
+  i.e. they predate the Jason switch and fell through it. `NL-20260829-B84A` (paid Aug 26) is still
+  at `recorded` with the address collected. Customers have paid and have no tracking.
+- 🟡 `WAREHOUSE_WHATSAPP` still points at the OLD rep (`+8613418806654`), not Jason. Fallback-only
+  (used if `WAREHOUSE_EMAIL` is unset), but if that ever happens, manifests with customer names and
+  addresses route to a former contractor.
+- 🟡 `$9.19` overpay on B84A is Daniel's to refund/credit.
+- 🟡 WhatsApp profile text fields still blank + customer-visible: `about`, `description`, `websites`,
+  `emails`, `vertical`. Logo IS set; sender ONLINE, quality HIGH.
+- 🟡 `SENDGRID_API_KEY` / `SENDGRID_FROM_EMAIL` are set in Railway but **SendGrid is referenced
+  nowhere in the code** — dead config, safe to delete.
+- 🟡 `static/northline_banner.jpg` still committed and unused.
+- 🟡 Airtable "Table 1" (3 junk records from the default base) — safe to delete.
+- 🟡 Credential cleanup: rotate the GitHub PAT, delete the Cloudflare API token, delete the Railway
+  token generated this session.
+- Per-order receiving addresses (§27) — still the real fix for payment matching; not built.
