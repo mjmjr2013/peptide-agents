@@ -718,3 +718,25 @@ resolves to an empty `from_`, throws, and is swallowed — silent failure that l
 - 🟡 Credential cleanup: rotate the GitHub PAT, delete the Cloudflare API token, delete the Railway
   token generated this session.
 - Per-order receiving addresses (§27) — still the real fix for payment matching; not built.
+
+### Handoff upkeep is now automatic (2026-08-29)
+Jordan's standing instruction: *"I don't want to have to keep manually giving context and updating
+handoffs."* Two mechanisms now cover that, so neither he nor a future session has to remember.
+
+1. **`CLAUDE.md`** (repo root) loads automatically in any Claude session opened on this directory —
+   Cowork, Claude Code, anywhere. Nobody pastes context in ever again. It points here and carries the
+   rules that have actually cost money (consoles lie, deploys miss, the WhatsApp 24h window, never
+   operator-ize Jordan's or Daniel's numbers).
+2. **`.claude/handoff-drift.sh`**, wired as a **SessionStart hook** in `.claude/settings.json`. It
+   compares HEAD against the last commit that touched `HANDOFF.md`. On drift it injects the commit
+   list into the session's context at startup and instructs it to bring this file current
+   unprompted. It is SILENT when the handoff is current, so a clean start stays quiet.
+   - It is a `command` hook because `agent`/`prompt` hook types are only available on TOOL events
+     (PreToolUse/PostToolUse/PermissionRequest), not `SessionStart`.
+   - It is `SessionStart`, not `Stop`: a Stop hook that blocks until the handoff is written risks a
+     loop and nags mid-task. Catching drift at the START of the next session is safe and sufficient.
+   - It also reports uncommitted tracked changes.
+   - To silence it deliberately, update `HANDOFF.md` — that is the point.
+
+**So the workflow is: just work. The handoff keeps itself honest.** If a session ends without the
+handoff being updated, the next one is told immediately and fixes it.
