@@ -643,7 +643,10 @@ resolves to an empty `from_`, throws, and is swallowed — silent failure that l
   only `labeled` — the DIEGO26 customer got that on 2026-08-27. Now correctly says "shipment is
   **booked**". Both templates take one variable ({{1}} = tracking), so it was a drop-in.
 - **Daniel's email switched everywhere** gmail → `daniel@northlinesupplies.com` (`REPORT_EMAIL`,
-  `MANIFEST_CC`, this doc).
+  `MANIFEST_CC`, this doc). ✅ **Delivery CONFIRMED 2026-08-29** — Daniel received the prod test send,
+  so the mailbox is provisioned and not bouncing. That address now carries the weekly report, the
+  manifest CC, health alerts AND large-order operator alerts, so if it ever stops working, all four
+  go dark together.
 - **Twilio numbers released**: `+15014178514` and `+18774692290` (both unused, $3.30/mo). Only
   `+85292909474` remains. `TWILIO_PHONE_NUMBER` (which held the released toll-free) was DELETED.
   Safe because Leads store phones as `whatsapp:+1...`, so every live send path takes the
