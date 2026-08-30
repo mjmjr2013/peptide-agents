@@ -689,8 +689,25 @@ resolves to an empty `from_`, throws, and is swallowed — silent failure that l
   (used if `WAREHOUSE_EMAIL` is unset), but if that ever happens, manifests with customer names and
   addresses route to a former contractor.
 - 🟡 `$9.19` overpay on B84A is Daniel's to refund/credit.
-- 🟡 WhatsApp profile text fields still blank + customer-visible: `about`, `description`, `websites`,
-  `emails`, `vertical`. Logo IS set; sender ONLINE, quality HIGH.
+- 🟡 **WhatsApp profile text still blank + customer-visible** (`about`, `description`, `websites`,
+  `emails`, `vertical`). Logo IS set; sender ONLINE, quality HIGH. **Copy is DRAFTED and approved-
+  pending — paste it in when Jordan signs off** (2026-08-29). It deliberately mirrors the language
+  already on northlinesupplies.com so the profile makes no claim the website does not:
+    - `about` (139-char cap; this is 128): "Research supply company serving licensed institutions
+      and professionals. Research use only — not for human or animal consumption."
+    - `description` (512 cap; ~340): "Northline Group LLC, operating as Northline Supplies, is a
+      research supply company providing high-quality compounds to licensed research institutions
+      and professionals.\n\nAll products are sold strictly for research use only. Products are not
+      for human or animal consumption, and are not intended to diagnose, treat, cure, or prevent
+      any disease."
+    - `websites` → https://northlinesupplies.com ; `emails` → jordan@northlinesupplies.com
+    - `vertical` → **Professional Services**. Deliberately NOT "Medical and Health": that implies a
+      therapeutic positioning which contradicts our research-use-only language and invites scrutiny
+      of a peptide seller.
+    - `address` → **LEFT BLANK ON PURPOSE** (Jordan's call, 2026-08-29). The registered address
+      (233 N Heathermoor Ln, Kaysville UT) appears to be residential and is the B84A ship-to. It is
+      already on the website, but a WhatsApp profile puts it one tap from every unvetted prospect
+      who messages the ad number. Do not fill this in without asking again.
 - 🟡 `SENDGRID_API_KEY` / `SENDGRID_FROM_EMAIL` are set in Railway but **SendGrid is referenced
   nowhere in the code** — dead config, safe to delete.
 - 🟡 `static/northline_banner.jpg` still committed and unused.
