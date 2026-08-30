@@ -14,6 +14,11 @@ is deployed, what broke and why, and what is deliberately left alone.
 Do not "fix" something that looks stale without checking HANDOFF for whether it is intentional.
 Several records and settings are deliberately in an odd state and documented as such.
 
+**Keep it current without being asked.** A SessionStart hook (`.claude/handoff-drift.sh`) compares
+HEAD against the last commit that touched `HANDOFF.md`. If it told you at startup that commits have
+landed since, updating the handoff is part of this session's work — record WHY, not just what. It
+goes quiet once the handoff is current.
+
 ## Hard-won rules
 
 - **Consoles lie — verify through the API.** A Twilio sender can read ONLINE with an empty webhook

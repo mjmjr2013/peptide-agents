@@ -738,5 +738,8 @@ handoffs."* Two mechanisms now cover that, so neither he nor a future session ha
    - It also reports uncommitted tracked changes.
    - To silence it deliberately, update `HANDOFF.md` — that is the point.
 
+`CLAUDE.md` also states the expectation directly, so a session that somehow starts without the hook
+still knows the handoff is its job.
+
 **So the workflow is: just work. The handoff keeps itself honest.** If a session ends without the
 handoff being updated, the next one is told immediately and fixes it.
