@@ -206,8 +206,26 @@ class AirtableClient:
             return None
         lid = lead["id"]
         matches = [o for o in self.get_awaiting_orders() if lid in (o["fields"].get("lead_id") or [])]
-        matches.sort(key=lambda o: o["fields"].get("created_at", ""), reverse=True)
+        matches.sort(key=self._newest_first, reverse=True)
         return matches[0] if matches else None
+
+    @staticmethod
+    def _newest_first(record: dict) -> str:
+        """Sort key for "the most recent of these orders".
+
+        `created_at` is in the Airtable schema but NOTHING EVER WRITES IT — the
+        field is empty on every order, so the two sorts below were sorting on ""
+        and returning whatever Airtable happened to list first rather than the
+        newest. That matters here: both callers pick an order to recover payment
+        state onto or to supersede, and picking the wrong one of a customer's two
+        awaiting orders is the kind of mistake §5/§27 exist to prevent.
+
+        Airtable stamps every record with `createdTime` at the top level, so it is
+        always available and needs no schema change. `paid_at` wins where present
+        because that is the business event.
+        """
+        f = record.get("fields", {})
+        return f.get("created_at") or f.get("paid_at") or record.get("createdTime") or ""
 
     def get_paid_orders_for_week(self, week: str) -> list[dict]:
         return self.orders.all(formula=f"AND({{payment_status}}='paid',{{week_tag}}='{week}')")
@@ -244,7 +262,7 @@ class AirtableClient:
         code = (code or "").strip().upper()
         rows = self.orders.all(
             formula=f"AND({{promo_code}}='{code}',{{payment_status}}='awaiting')")
-        rows.sort(key=lambda o: o["fields"].get("created_at", ""), reverse=True)
+        rows.sort(key=self._newest_first, reverse=True)
         return rows[0] if rows else None
 
     def get_orders_needing_tracking(self, include_legacy: bool = False) -> list[dict]:
@@ -269,14 +287,24 @@ class AirtableClient:
             fields["fulfillment_status"] = new_status  # best effort
         return self.orders.update(order_id, fields)
 
-    def set_order_tracking(self, order_id: str, tracking_number: str) -> dict:
+    def set_order_tracking(self, order_id: str, tracking_number: str,
+                           complete: bool = True) -> dict:
         """Record a tracking number → status 'labeled'. Per the business flow the
         warehouse creates the label FAST (possibly before inventory arrives) as a
         trust signal; actual dispatch is the vial-photo stage ('shipped').
         NOTE: fulfillment_status is a single-select — only pass existing options
-        (Airtable rejects the whole update on an unknown option value)."""
+        (Airtable rejects the whole update on an unknown option value).
+
+        `complete=False` records progress on a MULTI-PACKAGE order without
+        finishing it: the numbers so far are saved, but `tracking_sent` stays
+        false so the order remains on the manifest and the customer is not told
+        the shipment is booked. Defaults to True, so every existing caller and
+        every single-parcel order behaves exactly as before."""
+        value = (tracking_number or "").strip()
+        if not complete:
+            return self.orders.update(order_id, {"tracking_number": value})
         return self._advance_fulfillment(order_id, "labeled", {
-            "tracking_number": tracking_number.strip(),
+            "tracking_number": value,
             "tracking_sent": True,
         })
 

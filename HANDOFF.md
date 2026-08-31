@@ -4,10 +4,37 @@ Paste this into a fresh Claude Code session (run from `~/peptide-agents`) to con
 It describes the live WhatsApp sales agent, the new order/payment/fulfillment system,
 how to deploy/debug, and what's outstanding. No secret tokens are stored here.
 
-**Last updated 2026-08-30. Read §30a FIRST — it is the newest.** §30 consolidates the catalog
-into one SKU-keyed source of truth with real weights, closes the bac-water shipping hole by pricing
-freight into the product ($12 → $17, both waters) rather than by a weight rule, and fixes a hole in
-the §29 test suite itself: it could not have caught a price being edited. NOT YET DEPLOYED.
+**Last updated 2026-08-31. Read §30g FIRST — it is the newest.** §30g sorts the manifest oldest-
+first with the wait shown on every row, and fixes two payment-recovery sorts that keyed on a field
+nothing writes.
+
+§30f §30f rebuilds the manifest WEB
+PAGE as the manifest itself — collapsed orders, packages, stickers, and a tracking box per package
+feeding Airtable — and drops the emailed spreadsheet.
+
+§30e §30e completes sticker coverage:
+every one of the 151 SKUs now has label artwork, sterile water included.
+
+§30d §30d removes Dermorphin and fixes
+the §30b font guard, which was checking for fonts the renderer never asks for and let a tofu build
+through. Three sheet tests are RED on purpose until the price sheets are rebuilt on the Mac.
+
+§30c §30c rebuilds the warehouse
+manifest as a labelling sheet — one row per SKU with the sticker pictured, two tabs, packages broken
+out — and installs 132 sticker images mapped to SKUs with the mapping verified by test.
+
+§30b §30b turns the stale-price-sheet
+trap §30a caught by hand into a test, and records the thing that makes these sheets special: they
+are bilingual, so building them anywhere without a Chinese font renders every CJK glyph as a hollow
+box — silently. They can only be built on Jordan's Mac. NOT YET DEPLOYED.
+
+§30a (deployed) records the §30 deploy and that near miss: the tracked price sheets in `static/` were
+still showing $12 water while the code quoted $17.
+
+§30 consolidates the catalog into one SKU-keyed source of truth with real weights, closes the
+bac-water shipping hole by pricing freight into the product ($12 → $17, both waters) rather than by a
+weight rule, and fixes a hole in the §29 test suite itself: it could not have caught a price being
+edited.
 
 Before that, §29 FIRST for the pricing guard — §29 fixes a silent revenue leak of a
 different kind from §28: catalog name drift left five SKUs unpriceable, and an unpriceable line
@@ -1030,3 +1057,322 @@ Daniel's Sermorelin cost check, and the GitHub PAT still embedded in the `origin
 Also unresolved: this machine cannot write to the iCloud folder at all — macOS denies the process
 access to `~/Library/Mobile Documents/...`, so Jordan's own price-sheet copies are still the old
 build and need regenerating from a terminal that has Full Disk Access.
+
+## 30b. The stale-price-sheet trap, made into a test (2026-08-31) — NOT YET DEPLOYED
+
+§30a caught by hand that the tracked `static/price_list.{xlsx,xls,pdf}` were still on $12 water while
+`core/pricing` said $17. Catching it by hand is not a control — the same mistake is available on
+every future price change, and the failure is invisible from the code. This section makes it a test.
+
+**`tests/test_served_price_sheets.py`.** Reads the workbook production actually serves and compares
+every SKU to the catalog. `openpyxl` is already a dependency, so this parses real bytes rather than
+trusting that someone remembered to regenerate. Verified it bites: restoring the genuine pre-deploy
+`price_list.xlsx` from `6225f5b` turns four tests red, naming both waters.
+
+**The two formats that cannot be read back.** `.xls` needs `xlrd`, which is not a dependency, and the
+PDF's numbers are drawn with a subsetted matplotlib font — `pdftotext` returns the headings with the
+digits *missing entirely*, so no extractor recovers them. Those are covered by content hash instead:
+`static/price_list.stamp.json` records a sha256 of each tracked sheet alongside the price fingerprint
+they were certified against. Swapping the old `.pdf` back in is caught by that hash alone.
+
+**⚠️ Building these anywhere but the Mac produces a sheet of hollow boxes.** The sheets are bilingual
+and matplotlib substitutes a missing font *silently*. Rendering a container-built PDF to PNG on
+2026-08-31 showed the entire Chinese footer as tofu — while the English half looked perfect, so a
+glance at the file would not have caught it. `regenerate_all()` now calls `_assert_cjk_font_available()`
+and raises `CJKFontMissing` rather than building. **This is why the sheets are regenerated on Jordan's
+Mac and never in a cloud session** — worth knowing before anyone "helpfully" rebuilds them in CI.
+
+**`deploy_catalog_v2.sh` is deleted**, per §30a's instruction to fix or delete it before reuse. It was
+a one-shot for a deploy that has already happened and it carried the wrong regeneration command.
+Replaced by **`regenerate_price_sheets.sh`**, which is the reusable procedure for the recurring risky
+operation — a price change — and encodes both rules that were missed: `RAILWAY_ENVIRONMENT=1` so the
+writes land in `static/` rather than iCloud, and `regenerate_all()` so the five formats are rebuilt
+together and cannot drift apart.
+
+**`core/price_image.py` gains three helpers**, all small and none touching the rendering: 
+`price_fingerprint()` (hash of every SKU/price on the sheet), `verify_static_sheets()` (parses the
+committed workbook, raises if it disagrees with `CATEGORIES`), and `stamp_static_sheets()`. Note that
+`STAMP_PATH` follows the *same* iCloud/static branch as the artifacts — that is deliberate, and is
+what makes the iCloud mistake self-reporting: regenerate to iCloud and the tracked stamp stays behind,
+so the suite goes red instead of production going quietly stale.
+
+**413 assertions passing.** The committed sheets were verified as current before stamping — the water
+rows read $17 in the served workbook — so this deploy certifies the artifacts §30a already fixed
+rather than rebuilding them.
+
+### To deploy
+`bash ~/peptide-agents/regenerate_price_sheets.sh` is NOT needed for this commit (the sheets are
+already correct and now stamped). Just run the suite, commit, push, force-deploy by SHA and confirm
+the running commit (§10). Use that script the *next* time a price moves.
+
+Still open, unchanged: the WhatsApp smoke test through a non-operator handset; Daniel's Sermorelin
+cost check (§29); the GitHub PAT in the `origin` remote URL (§29a); and Jordan's own iCloud copies of
+the price sheets, which this machine cannot write to without Full Disk Access (§30a).
+
+## 30c. The labeling manifest Jason's crew works from (2026-08-31) — NOT YET DEPLOYED
+
+The daily warehouse email carried a link and nothing else; the weekly workbook squashed each order
+into one cell — `3x Retatrutide 10mg x10; 2x Retatrutide 100mg x10`. A crew reading that has to parse
+a semicolon-separated string and keep 10mg and 100mg apart by eye. Now the email carries a workbook
+shaped the way the bench actually works.
+
+### `core/manifest.py`
+
+**One row per SKU**: SKU · the product name AS PRINTED ON THE STICKER · strength · kits · a picture of
+the sticker. Format follows the sheet Daniel produced, which the crew already reads.
+
+**Two tabs**, because the two jobs are different and mixing them is how things get missed:
+1. **Label & Ship** — no tracking number yet. This is the labelling work.
+2. **Photo Before Ship** — tracked already, waiting only on the vial photo (§16/§18a).
+
+They are disjoint and together are exactly `get_orders_needing_fulfillment()`; a test asserts it.
+
+**Packages are broken out** via `shipping.split_packages()` — the crew packs parcels, not orders. Each
+package is its own block, and **every package banner repeats its order ref** because a big order runs
+over a page break and a package header stranded at the top of a page identifies nothing.
+
+**A SKU with no sticker prints "⚠ NO STICKER ON FILE — do not label, ask Jordan" in red**, never a
+blank cell. At a bench a blank reads as "no sticker needed".
+
+Attached to `run_daily_manifest()`. The build is wrapped: a link-only email is degraded, but no email
+is a day of orders nobody works on.
+
+### The stickers — `static/labels/<SKU>.png`
+
+138 label images came from the shared Google Photos album (the ones in Daniel's example workbook were
+a FORMATTING REFERENCE ONLY and are not ours — those were the old design). **132 of 155 SKUs now have
+artwork**, ~11 MB at 660px wide, 64-colour palette: the QR code and strength stay sharp and the whole
+set is a tenth of the original.
+
+**THE FILENAME IS THE MAPPING.** There is deliberately no hand-maintained SKU→file table — a table is
+one more copy to drift, which is the failure mode of §29, §30 and of the album itself, whose
+filenames use *its own* SKU codes (`5AM5`, `KLOW80`, `HGH10`, `AD5`, `SMO2`) — **a fifth spelling of
+the catalog**, after pricing.py, the price sheet, coa.html and Daniel's manifest. `label_text.json`
+holds what is printed on each sticker, because the stickers carry Northline's naming (`GLP-3 RT` for
+Retatrutide, `WOLVERINE`, `MT-2`), not ours.
+
+**The new labels print the strength** — `10mg` / `100mg` in large type — where the old ones had a row
+of checkboxes to tick. That fixes the mislabelling risk at the source; the manifest's strength column
+now agrees with the sticker beside it instead of doing the work alone.
+
+**Mapping was verified, not assumed.** Matching is on product AND exact dose, never a single-candidate
+fallback: `catalog.find()` inherits pricing's fuzzy matcher, which cheerfully paired the album's
+**3 ml bacteriostatic water sticker with our 10 ml SKU**. Fine for pricing a typo, a mislabel on a
+vial. `tests/test_labels.py` asserts, for all 132, that **the strength printed on a sticker equals the
+strength of the SKU it is filed under** — verified to bite by filing the 10mg Retatrutide sticker
+under `RT100`.
+
+Two label generations overlapped on three SKUs. Jordan's call: **`BPC 157 / TB500` for the blend**
+(so BB10 matches BB20, which exists only in that wording) **and plain `TB 500` for TB-500**, not the
+`(THYMOSIN B4)` variant.
+
+Three album files map to nothing we sell and are unused: bac water **3 ml** (we sell 10 ml only),
+Sermorelin **2 mg** (removed in §29), TB-500 **2 mg** (we sell 5 and 10).
+
+### Open
+
+**23 SKUs have no sticker** — ACTH, Cardiogen ×2, Crystagen ×2, Dermorphin ×4, Dulaglutide ×2, EPO,
+Humanin, Liraglutide ×3, Matrixyl, Melatonin, MIC, Pinealon 5mg, Snap-8 ×2, **Sterile Water**. Jordan
+is checking which are discontinued; anything dead should come off the price list rather than get
+artwork. Two look like album gaps rather than dead products: **sterile water** (just repriced to $17
+in §30) and **Pinealon 5mg** (the album has the 10mg).
+
+Rows print at 84pt so five fit a landscape page; each order starts on a fresh page and each subsequent
+package breaks too. A single package with more than ~5 SKUs can still run over a page — the package
+banner names its order, but the customer address will be on the previous page.
+
+### To deploy
+1. `rm -f agents/messaging_placeholder_ignore.py northline_labels.zip.bak` — a stray file landed
+   there from a mistyped path in the Cowork session; it is junk and must not be committed.
+2. `unzip northline_labels.zip -d static/ && rm northline_labels.zip` — the 132 stickers (binary, so
+   they were delivered as a zip rather than 132 separate writes).
+3. `python3 -m pytest tests/ -q` → expect **834 passed**. `test_labels.py` runs against the real
+   artwork, so a missing or misnamed sticker fails here rather than reaching the bench.
+4. Commit, push, force-deploy by SHA, confirm the running commit (§10).
+
+## 30d. Dermorphin removed + the CJK guard was checking the wrong thing (2026-08-31) — NOT YET DEPLOYED
+
+**Dermorphin is discontinued** (Jordan). All four doses removed from `pricing.CATALOG`, from
+`price_image.CATEGORIES`, and from the frozen baseline. It was not in `coa.html` or the WhatsApp
+price list, so those needed no change. 155 SKUs → **151**.
+
+A discontinued product now fails CLOSED like any unpriceable line (§29): a customer asking for
+Dermorphin gets a warm stall and an operator alert, rather than being sold from a stale row.
+
+`tests/test_price_baseline.py` gained a **`REMOVED_SKUS` log**. A SKU may leave `BASELINE` only by
+being listed there with a date, who decided, and why — otherwise `test_baseline_covers_every_sku`
+would let a product silently vanish from the price list, which is the same class of unreviewed
+change the baseline exists to catch. Two tests assert a removed SKU is gone from every catalog copy
+and no longer prices.
+
+### ⚠️ The font guard from §30b did not work, and I only found it by looking
+
+§30b added `_assert_cjk_font_available()` so nobody could build the bilingual price sheets on a
+machine without Chinese fonts. It checked whether **any** CJK font was installed — including
+`Noto Sans CJK SC` and `WenQuanYi Zen Hei`, which **the renderer never asks for**. The Chinese sheet
+sets `rcParams["font.family"]` to four Mac fonts plus `DejaVu Sans`; DejaVu resolves everywhere and
+contains no CJK glyphs at all, so it is precisely what draws the tofu.
+
+The container had a CJK font installed. The guard said fine. `regenerate_all()` ran to completion and
+overwrote `static/price_list.{png,pdf,xls,xlsx}` with sheets whose entire Chinese half was empty
+boxes — the exact failure §30b was written to prevent, sailing straight through the guard against it.
+The files were restored from git; nothing bad reached the repo.
+
+**Fixed** by resolving each font the way the renderer will, with `fallback_to_default=False` so
+matplotlib cannot quietly answer "DejaVu". The guard's list is now `CJK_FONTS`, and a test asserts it
+equals the renderer's own list minus the DejaVu fallback — because *a guard that checks a different
+list than the renderer uses will pass while the output is wrong*, which was the whole bug.
+
+The lesson generalises: §30b's guard was written from reasoning about what could go wrong. It was
+never watched failing on a machine that genuinely lacked the fonts. **Guards need to be seen to bite.**
+
+### Expect 3 RED tests until the sheets are rebuilt
+
+`test_served_price_sheets.py` fails on `DR2/DR5/DR10/DR20` — the committed `static/price_list.*` still
+list Dermorphin, and they can only be rebuilt on the Mac. That is the §30b guard doing its job.
+
+### To deploy
+1. `rm -f agents/messaging_placeholder_ignore.py`
+2. `unzip -o northline_labels.zip -d static/ && rm northline_labels.zip`
+3. **`bash regenerate_price_sheets.sh`** — its first real use. Rebuilds all five formats to
+   `static/`, re-stamps, and re-runs the sheet tests. The three reds above go green here.
+4. `python3 -m pytest tests/ -q` → expect **829 passed**.
+5. Commit, push, force-deploy by SHA, confirm the running commit (§10).
+
+## 30e. Sticker coverage is complete — 151 of 151 (2026-08-31) — NOT YET DEPLOYED
+
+Jordan supplied the 19 remaining labels (`~/Downloads/individual`) — the §30c gap list minus
+Dermorphin, which §30d removed. **Every SKU we sell now has artwork**, so the manifest's red
+"NO STICKER ON FILE" warning should never appear in normal operation; if it does, something is
+genuinely wrong rather than merely incomplete.
+
+- All 19 matched on product AND exact dose, the same strict rule §30c uses — no fuzzy fallback, no
+  manual assignment. `ACTH5 CAR10 CAR20 CRY10 CRY20 DUL5 DUL10 EP0 HUM10 LGT5 LGT10 LGT20 MAT10
+  MEL10 MIC10 NP810 NP8100 PI5 STW10`.
+- **Sterile water finally has one** — it was the gap that mattered most, being repriced to $17 in §30
+  alongside bac water and actively sold.
+- These are a different aspect ratio to the album set (1400×600 vs 1663×946) and carry a storage
+  panel instead of the reconstitution checkboxes on the water/liquid ones. Same design family, and
+  the strength is printed on every one. The manifest scales each sticker to fit its row, so the two
+  shapes sit side by side without breaking the layout — checked by eye, not assumed.
+- `static/labels` is now **151 stickers, ~11 MB**.
+
+`test_labels.py` now runs 151 strength assertions instead of 132: for every SKU, the strength printed
+on its sticker must equal the strength of the SKU it is filed under.
+
+**883 passing**, with the same 3 reds from §30d — the committed price sheets still list Dermorphin
+and only the Mac can rebuild them. Step 3 of the deploy clears them.
+
+## 30f. The page IS the manifest now (2026-08-31) — NOT YET DEPLOYED
+
+§30c built the labelling sheet as an XLSX attached to the daily email. Jordan's correction:
+
+> *"I want the actual web page to be formatted that way... and then within that, a spot where he can
+> enter tracking for each package in the order, and that way it'll automatically feed to Airtable.
+> I don't want it to be a separate spreadsheet that's siloed away that isn't automatically
+> integrated."*
+
+He is right, and the reason is worth keeping: **anything typed into an emailed workbook reaches
+nobody.** It cannot become a tracking number in Airtable and it cannot message a customer. A sheet
+that looks like the system but isn't wired to it is worse than no sheet.
+
+### What changed
+
+**`core/manifest_page.py` (new)** renders the whole page. It takes `core.manifest.build_view` output
+— the SAME structure the workbook renders from — so the page and any printed copy cannot show
+different pictures of an order.
+
+- **Orders are collapsed.** Each is a native `<details>`: order ref, customer, package and kit count,
+  and a progress pill. Tap to open. `<details>` is native HTML, so **expanding needs no JavaScript**
+  — it works on a warehouse phone with a bad connection. JS only remembers the last tab, wrapped in
+  try/catch because localStorage throws in private mode.
+- **Open, it is the workbook**: packages broken out with their weight, then one row per SKU with the
+  sticker pictured, the wording printed on it, the strength large and alone, and the kit count.
+- **Two tabs** with live counts, same split as §30c.
+- **The email has NO attachment any more** — it says what is waiting and links to the page.
+- The white-label labelling-split notice (§25) is preserved, injected via a callback so the page
+  module needs no `deals` import.
+
+### Per-package tracking
+
+One box per package. `POST /manifest/save` now takes `package` and `of`, MERGES into the order's
+tracking rather than replacing it, and — the part that matters —
+
+**an order is only marked tracked, and the customer only messaged, once EVERY package has a number.**
+
+Telling a buyer "your shipment is booked" while two of three parcels have no label is worse than
+waiting a few hours. Until then the order stays on tab 1 showing `1/3 tracked`.
+
+**No Airtable schema change.** `tracking_number` is a `singleLineText` and stays one: a single-parcel
+order stores the bare number exactly as before, and a multi-parcel order stores
+`1/3 AAA | 2/3 BBB | 3/3 CCC`. `parse_tracking()` reads a bare value as package 1, so **every
+existing order keeps reading correctly**. `set_order_tracking(..., complete=False)` records progress
+without advancing `fulfillment_status` or setting `tracking_sent`; the default is still `True`, so
+every existing caller behaves as it did.
+
+### The customer message
+
+`send_tracking_to_customer` now accepts a list. One parcel: **wording unchanged**, and a test pins
+that. Several: *"Your order is on its way in 3 packages, so please look out for all of them"* + a
+numbered list + a note they may not arrive the same day — because a buyer told about one parcel who
+receives three assumes two are lost.
+
+⚠️ Outside the 24h window only the approved template can be sent and **it takes ONE variable**, so
+the numbers are joined into it (`"AAA, BBB"`). No template re-approval needed — §18a records that
+approval as slow — but the template's own wording still says "has shipped", singular. Worth revising
+when the `northline_tracking_booked` swap in §18a happens anyway.
+
+### Verification — 909 passing
+
+`tests/test_manifest_page.py` (26) covers the collapsed summary carrying no SKU rows, one tracking box
+per package each naming its own index, partial tracking not completing, the storage round-trip
+including out-of-order entry, escaping of customer data, and the no-JS requirement. The page was also
+rendered in a real browser and screenshotted, collapsed and expanded — the layout was checked by eye,
+not assumed.
+
+The 3 known reds from §30d remain (Dermorphin still in the committed price sheets).
+
+`core/manifest.build_labeling_manifest` is KEPT — it shares the same view data and still produces a
+printable workbook — but nothing emails it now. The page carries `@media print` rules so the crew can
+print from the browser instead.
+
+## 30g. Manifest sorted oldest-first, with the wait on every row (2026-08-31) — NOT YET DEPLOYED
+
+Jordan's concern, and it is a specific one worth recording: a delivery of fresh stock arrives from the
+lab and Jason fulfils **whatever is in front of him**, so an order that has already waited two weeks
+waits longer still. Sorting is the fix, but only if the age is visible — otherwise the queue silently
+depends on nobody reordering it.
+
+- **Oldest first**, and the page says so at the top: *"Oldest orders are at the top — please work
+  down the list."*
+- **Every row shows the date and the wait** — `8 Aug · waiting 23 days`. Amber at 7 days, red at 14.
+  Not deadlines, just "impossible to scroll past".
+- Dates are written `8 Aug`, never `08/12` — the crew reading this is in China, where that means
+  something else.
+- An order with no resolvable date sorts **last, badged "date unknown"**. Every order on this page is
+  paid, so a missing date is an oddity that must not jump the queue by being unparseable.
+
+### ⚠️ `created_at` is dead, and two sorts were relying on it
+
+`created_at` is in the Airtable schema (`setup_airtable.py`) but **nothing anywhere writes it** —
+`create_pending_order` does not set it. It is empty on every order.
+
+Two sorts in `core/airtable_client.py` keyed on it to pick "the most recent" of a customer's awaiting
+orders: `get_awaiting_order_for_phone` (rebuilds payment state after a redeploy wipes memory, §4a) and
+the promo-code supersede path (§24). With an empty key the sort is a no-op and they returned whatever
+Airtable listed first — so with two awaiting orders they could pick the wrong one, in exactly the
+payment-matching area §5 and §27 exist to protect.
+
+Both now use `_newest_first`, which prefers `paid_at` and falls back to Airtable's own `createdTime` —
+always present, no schema change. A test covers it.
+
+The manifest's own date follows the same order: **`paid_at` → `createdTime` → the date inside the
+order ref** (`NL-YYYYMMDD-…`). `paid_at` first because the customer's clock starts when their money
+arrives, not when a record was made.
+
+⚠️ Also noticed: **`paid_at` is written by `mark_order_paid` but is NOT in `setup_airtable.py`**.
+It clearly exists in the live base — payments demonstrably work — so the setup script is stale rather
+than the code being broken. Worth knowing before anyone rebuilds a base from that script and wonders
+why payment recording 422s.
+
+**920 passing** (37 in `test_manifest_page.py`), same 3 known Dermorphin reds.

@@ -1906,18 +1906,38 @@ def _whatsapp_window_open(phone: str) -> bool:
         return False
 
 
-def send_tracking_to_customer(phone: str, tracking: str, name: str = "") -> bool:
-    """Text a customer their shipping tracking number in Lily's voice (WhatsApp).
+def send_tracking_to_customer(phone: str, tracking, name: str = "") -> bool:
+    """Text a customer their shipping tracking number(s) in Lily's voice (WhatsApp).
+
+    `tracking` is a string, or a LIST when the order ships in several packages —
+    a heavy order is split under the 2 kg cap (core/shipping.py) and each parcel
+    gets its own number. A buyer who is told about one parcel and receives three
+    assumes two are lost, so the count is stated explicitly (Jordan, 2026-08-31).
+
     Uses the approved WhatsApp template when their 24h session window is closed.
-    Returns True if sent. Best-effort — logs and returns False on failure."""
-    if not phone or not tracking:
+    The template takes ONE variable, so the numbers are joined into it — no new
+    template approval needed. Best-effort: logs and returns False on failure.
+    """
+    numbers = [t.strip() for t in ([tracking] if isinstance(tracking, str) else list(tracking))
+               if (t or "").strip()]
+    if not phone or not numbers:
         return False
     from_number = settings.twilio_whatsapp_from if "whatsapp" in phone else settings.twilio_phone_number
     dear = f"{name}, " if name else ""
-    body = (f"Wonderful news, {dear}dear! 🎉 Your shipment is booked and your tracking number is "
-            f"*{tracking.strip()}*. It will show movement once the carrier scans it in — I will "
-            f"also send you a photo of your vials before they go out. Thank you so much for your "
-            f"order, dear — message me anytime! 😊")
+    joined = ", ".join(numbers)
+    if len(numbers) == 1:
+        body = (f"Wonderful news, {dear}dear! 🎉 Your shipment is booked and your tracking number is "
+                f"*{numbers[0]}*. It will show movement once the carrier scans it in — I will "
+                f"also send you a photo of your vials before they go out. Thank you so much for your "
+                f"order, dear — message me anytime! 😊")
+    else:
+        lines = "\n".join(f"  {i}. *{n}*" for i, n in enumerate(numbers, start=1))
+        body = (f"Wonderful news, {dear}dear! 🎉 Your order is on its way in {len(numbers)} packages, "
+                f"so please look out for all of them:\n{lines}\n"
+                f"They will show movement once the carrier scans them in, and they may not arrive on "
+                f"the same day. I will also send you a photo of your vials before they go out. Thank "
+                f"you so much for your order, dear — message me anytime! 😊")
+    tracking = joined
     try:
         if _whatsapp_window_open(phone) or not settings.tracking_content_sid:
             msg = twilio_client.messages.create(body=body, from_=from_number, to=phone)

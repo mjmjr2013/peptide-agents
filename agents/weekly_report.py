@@ -158,16 +158,29 @@ def run_daily_manifest() -> dict:
     todo = " and ".join(x for x in [
         f"{need_trk} need a tracking number" if need_trk else "",
         f"{need_pic} need a photo of the packed vials" if need_pic else ""] if x)
-    body = (f"Northline: {n} {plural} to process — {todo}. Open the manifest sheet and "
-            f"complete each order:\n{link}\n\n"
+    # Jordan, 2026-08-31: NO attachment. The page IS the manifest now — it shows
+    # every SKU with its sticker, the packages broken out, and a tracking box for
+    # each one, all writing straight to Airtable. A workbook mailed alongside it
+    # would be siloed: whatever the crew typed into their copy would reach nobody.
+    from core.manifest import split_by_stage
+    new_orders, photo_orders = split_by_stage(orders)
+
+    body = (f"Northline: {n} {plural} to process — {todo}.\n\n"
+            f"Open the manifest and tap an order to see what it contains:\n{link}\n\n"
+            f"Tab 1 is new orders to label — every SKU with a picture of its sticker, split "
+            f"into the packages it actually ships as, with a box for each package's tracking "
+            f"number. Tab 2 is orders that only need a photo of the packed vials before they go.\n\n"
+            f"CHECK THE STRENGTH against the sticker before you label. That is the one thing "
+            f"we cannot fix after it ships.\n\n"
             f"IMPORTANT: Please do NOT reply to this email — replies are not read by anyone. "
-            f"Enter the tracking number AND upload the vial photo on the page above; the "
-            f"customer is notified automatically the moment you save.")
+            f"Enter tracking and upload the photo on the page above; the customer is notified "
+            f"automatically once every package has a number.")
     if settings.warehouse_emails:
         sent = _send_email(f"Northline shipping manifest — {n} {plural} ready to ship",
                            body, [], recipients=settings.warehouse_emails,
                            cc=settings.manifest_cc)
-        return {"pending": n, "sent": sent, "via": "email"}
+        return {"pending": n, "sent": sent, "via": "email",
+                "to_label": len(new_orders), "to_photograph": len(photo_orders)}
     print("[reports] WAREHOUSE_EMAIL not set — falling back to WhatsApp for daily manifest")
     sent = _send_whatsapp([body])
     if sent and settings.warehouse_whatsapp:

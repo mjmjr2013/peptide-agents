@@ -214,13 +214,25 @@ def start_webhook_server(port: int = 5000):
 
         @app.route("/manifest")
         def manifest_page():
+            """The manifest itself, not a link to one.
+
+            Jordan, 2026-08-31: the page should read like the labelling workbook —
+            collapsed orders that expand, packages broken out, the sticker beside
+            every row — AND be where tracking is entered, one box per package,
+            feeding Airtable directly. A spreadsheet emailed alongside is siloed:
+            anything typed into it reaches nobody.
+
+            Rendering lives in core/manifest_page.py; the data comes from
+            core.manifest.build_view, the same structure the workbook uses.
+            """
             from flask import request, abort
             from html import escape
             from config import settings
             from core.airtable_client import airtable
+            from core.manifest import build_view, split_by_stage
+            from core import manifest_page as page
             if not _manifest_authorized(request):
                 abort(403)
-            token = escape(settings.manifest_token)
             saved = request.args.get("saved", "")
             photo = request.args.get("photo", "")
             # ?legacy=1 also shows pre-Jason orders the old rep is finishing off-system,
@@ -231,153 +243,101 @@ def start_webhook_server(port: int = 5000):
             except Exception as e:
                 print(f"[Manifest] load failed: {e!r}")
                 orders = []
-            orders.sort(key=lambda o: o["fields"].get("order_ref", ""))
+
+            new_orders, photo_orders = split_by_stage(orders)
+            try:
+                to_label = build_view(new_orders, airtable.get_items_for_order)
+                to_photo = build_view(photo_orders, airtable.get_items_for_order)
+            except Exception as e:
+                print(f"[Manifest] view build failed: {e!r}")
+                to_label, to_photo = [], []
 
             banner = ""
             if saved:
-                banner = f'<div class="ok">✓ Tracking saved and sent to the customer for {escape(saved)}.</div>'
+                banner = f'<div class="ok">&#10003; Tracking saved for {escape(saved)}.</div>'
             elif photo:
-                banner = f'<div class="ok">✓ Vial photo sent to the customer for {escape(photo)}.</div>'
-            cards = []
-            for o in orders:
-                f = o["fields"]
-                items = "<br>".join(
-                    escape(f"{int(it['fields'].get('kits') or 0)}x {it['fields'].get('product','')} "
-                           f"{it['fields'].get('spec','')}".strip())
-                    for it in airtable.get_items_for_order(o)) or "—"
-                addr = "<br>".join(escape(x) for x in [
-                    f.get("address_line1"), f.get("address_line2"),
-                    " ".join(y for y in [f.get("city"), f.get("state_province"), f.get("postal_code")] if y),
-                    f.get("country")] if x)
-                ref = escape(f.get("order_ref", "") or o["id"])
-                # Labeling instructions for deals where the customer's branding covers
-                # only part of the order (the rest ship under our own Northline label).
-                # Without this the packer sees one undifferentiated kit list.
-                label_block = ""
+                banner = f'<div class="ok">&#10003; Vial photo sent to the customer for {escape(photo)}.</div>'
+
+            by_id = {o["id"]: o for o in orders}
+
+            def label_extra(order_id):
+                """Labelling instructions for deals where the customer's branding
+                covers only part of the order (the rest ship under our own label).
+                Without this the packer sees one undifferentiated kit list."""
+                rec = by_id.get(order_id)
+                if rec is None:
+                    return ""
                 try:
                     from core.deals import get_deal, labeling_split
-                    _deal = get_deal(f.get("promo_code", ""))
-                    _split = labeling_split(_deal) if _deal else None
+                    deal = get_deal(rec["fields"].get("promo_code", ""))
+                    split = labeling_split(deal) if deal else None
                 except Exception as e:
-                    print(f"[Manifest] labeling split failed for {ref}: {e!r}")
-                    _split = None
-                if _split:
-                    def _rows(lines):
-                        return "<br>".join(escape(f"{n}x {p} {s}".strip())
-                                           for p, s, n in lines)
-                    if _split["mixed"]:
-                        label_block = f"""
-                  <div class="labels">
-                    <b>🏷 TWO LABEL TYPES — check before packing</b>
-                    <div class="lgrp"><span class="tag cust">Customer branding</span>
-                      {_split['branded_kits']} kits<br>{_rows(_split['branded'])}</div>
-                    <div class="lgrp"><span class="tag ours">Northline label</span>
-                      {_split['unbranded_kits']} kits<br>{_rows(_split['unbranded'])}</div>
-                  </div>"""
-                    else:
-                        label_block = (f'<div class="labels"><b>🏷 All {_split["branded_kits"]} '
-                                       f'kits: customer branding</b></div>')
-                if f.get("tracking_sent"):
-                    tracking_block = '<div class="done">✓ Tracking sent</div>'
-                else:
-                    tracking_block = f"""
-                  <form method="POST" action="/manifest/save">
-                    <input type="hidden" name="token" value="{token}">
-                    <input type="hidden" name="order_id" value="{escape(o['id'])}">
-                    <input class="trk" name="tracking" inputmode="latin" autocapitalize="characters"
-                           placeholder="Enter tracking number" required>
-                    <button type="submit">Save &amp; send to customer</button>
-                  </form>"""
-                if f.get("vial_photo_sent"):
-                    photo_block = '<div class="done">✓ Vial photo sent</div>'
-                else:
-                    photo_block = f"""
-                  <form method="POST" action="/manifest/photo" enctype="multipart/form-data">
-                    <input type="hidden" name="token" value="{token}">
-                    <input type="hidden" name="order_id" value="{escape(o['id'])}">
-                    <label class="file">📷 Vial photo — take / choose picture
-                      <input type="file" name="photo" accept="image/*" required
-                             onchange="this.closest('form').querySelector('button').disabled=!this.files.length;
-                                       this.closest('label').classList.add('picked');
-                                       this.closest('label').firstChild.textContent='📷 ' + this.files[0].name + ' ';">
-                    </label>
-                    <button type="submit" class="photo-btn" disabled
-                            onclick="this.textContent='Sending…'">Send photo to customer</button>
-                  </form>"""
-                cards.append(f"""
-                <div class="card">
-                  <div class="ref">{ref}</div>
-                  <div class="name">{escape(f.get('ship_name',''))}</div>
-                  <div class="addr">{addr}</div>
-                  <div class="items"><b>Items:</b><br>{items}</div>
-                  {label_block}
-                  {tracking_block}
-                  {photo_block}
-                </div>""")
-            body = "".join(cards) if cards else '<div class="empty">🎉 All caught up — nothing waiting.</div>'
-            html = f"""<!doctype html><html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Northline — Shipping Tracking</title>
-<style>
-  body{{font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#f2f3f5;margin:0;padding:16px;color:#1c1c1e}}
-  .wrap{{max-width:640px;margin:0 auto}}
-  h1{{font-size:20px;margin:4px 0 2px}} .sub{{color:#666;font-size:13px;margin-bottom:14px}}
-  .card{{background:#fff;border-radius:14px;padding:14px 16px;margin-bottom:14px;box-shadow:0 1px 3px rgba(0,0,0,.08)}}
-  .ref{{font-weight:700;font-size:16px}} .name{{font-weight:600;margin-top:2px}}
-  .addr{{color:#444;font-size:14px;margin:6px 0}} .items{{font-size:14px;margin:8px 0 12px;color:#333}}
-  .trk{{width:100%;box-sizing:border-box;font-size:17px;padding:12px;border:1px solid #ccc;border-radius:10px;margin-bottom:10px}}
-  button{{width:100%;font-size:16px;font-weight:600;padding:13px;border:0;border-radius:10px;background:#0a84ff;color:#fff}}
-  button:active{{background:#0768cc}}
-  .ok{{background:#e7f8ec;color:#16692e;border-radius:10px;padding:12px;margin-bottom:14px;font-weight:600}}
-  .empty{{background:#fff;border-radius:14px;padding:28px 16px;text-align:center;color:#555}}
-  .done{{color:#16692e;font-weight:600;font-size:14px;margin:10px 0}}
-  form{{margin-top:10px}}
-  .file{{display:block;font-size:15px;font-weight:600;color:#0a84ff;border:1.5px dashed #0a84ff;
-        border-radius:10px;padding:12px;text-align:center;margin-bottom:10px;cursor:pointer}}
-  .file.picked{{border-style:solid;background:#eef6ff}}
-  .file input{{display:none}}
-  .photo-btn{{background:#34c759}} .photo-btn:active{{background:#28a745}}
-  button:disabled{{opacity:.45}}
-  .labels{{background:#fff8e6;border:1px solid #f0d089;border-radius:10px;
-          padding:10px 12px;margin:10px 0;font-size:14px;color:#4a3a12}}
-  .lgrp{{margin-top:8px;line-height:1.45}}
-  .tag{{display:inline-block;font-size:12px;font-weight:700;color:#fff;
-       border-radius:6px;padding:2px 7px;margin-right:6px}}
-  .tag.cust{{background:#0a84ff}} .tag.ours{{background:#8e8e93}}
-</style></head><body>
-<div class="wrap">
-<h1>📦 Shipping Manifest</h1>
-<div class="sub">For each order: enter the tracking number, and upload a photo of the packed vials.
-Each is sent to the customer right away.</div>
-{banner}{body}
-</div>
-</body></html>"""
-            return html
+                    print(f"[Manifest] labeling split failed for {order_id}: {e!r}")
+                    return ""
+                if not split:
+                    return ""
+                def rows(lines):
+                    return "<br>".join(escape(f"{n}x {p} {s}".strip()) for p, s, n in lines)
+                if split["mixed"]:
+                    return ('<div class="labels"><b>&#127991; TWO LABEL TYPES &mdash; '
+                            'check before packing</b>'
+                            '<div class="lgrp"><span class="tag cust">Customer branding</span>'
+                            f'{split["branded_kits"]} kits<br>{rows(split["branded"])}</div>'
+                            '<div class="lgrp"><span class="tag ours">Northline label</span>'
+                            f'{split["unbranded_kits"]} kits<br>{rows(split["unbranded"])}</div></div>')
+                return (f'<div class="labels"><b>&#127991; All {split["branded_kits"]} kits: '
+                        f'customer branding</b></div>')
+
+            return page.render(to_label, to_photo, settings.manifest_token,
+                               banner=banner, label_extra=label_extra)
 
         @app.route("/manifest/save", methods=["POST"])
         def manifest_save():
+            """Record ONE package's tracking number.
+
+            An order that ships in three parcels has three numbers, so this merges
+            into the order's tracking field rather than replacing it, and only
+            marks the order tracked — and messages the customer — once EVERY
+            package has a number. Telling a buyer "your shipment is booked" while
+            two of three parcels have no label is worse than waiting a few hours.
+            """
             from flask import request, redirect, abort
             from urllib.parse import quote
             from config import settings
             from core.airtable_client import airtable
+            from core.manifest import parse_tracking, format_tracking, tracking_numbers
             from agents.messaging_agent import send_tracking_to_customer
             if not _manifest_authorized(request):
                 abort(403)
+            back = f"/manifest?token={quote(settings.manifest_token)}"
             order_id = request.form.get("order_id", "")
             tracking = (request.form.get("tracking", "") or "").strip()
+            try:
+                index = int(request.form.get("package", "1") or 1)
+                total = int(request.form.get("of", "1") or 1)
+            except (TypeError, ValueError):
+                index, total = 1, 1
             if not order_id or not tracking:
-                return redirect(f"/manifest?token={quote(settings.manifest_token)}")
+                return redirect(back)
+            ref = ""
             try:
                 order = airtable.get_order(order_id)
-                airtable.set_order_tracking(order_id, tracking)
-                phone = airtable.get_lead_phone_for_order(order)
-                name = order["fields"].get("ship_name", "")
-                send_tracking_to_customer(phone, tracking, name)
                 ref = order["fields"].get("order_ref", "")
+                numbers = parse_tracking(order["fields"].get("tracking_number", ""))
+                numbers[index] = tracking
+                merged = format_tracking(numbers, total)
+                complete = all(numbers.get(i) for i in range(1, total + 1))
+                airtable.set_order_tracking(order_id, merged, complete=complete)
+                if complete:
+                    phone = airtable.get_lead_phone_for_order(order)
+                    name = order["fields"].get("ship_name", "")
+                    send_tracking_to_customer(phone, tracking_numbers(merged), name)
+                else:
+                    print(f"[Manifest] {ref}: {len(numbers)}/{total} packages tracked "
+                          f"— customer not messaged yet")
             except Exception as e:
                 print(f"[Manifest] save failed for {order_id}: {e!r}")
-                ref = ""
-            return redirect(f"/manifest?token={quote(settings.manifest_token)}&saved={quote(ref)}")
+            return redirect(f"{back}&saved={quote(ref)}")
 
         @app.route("/manifest/photo", methods=["POST"])
         def manifest_photo():

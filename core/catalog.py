@@ -35,6 +35,7 @@ audit fails until all three agree, which is the point.
 """
 import math
 import re
+from pathlib import Path
 
 from core import price_image, pricing
 from core.aliases import canon
@@ -80,10 +81,67 @@ SKU_WEIGHT_G: dict[str, float] = {}
 # split has to work in gross weight — see core/shipping.py.
 PACKAGE_TARE_G = 350.0
 
-# Per-SKU label artwork, keyed by SKU, relative to static/labels/. Populated by
-# the labeling work; the manifest builder reads it from here so there is exactly
-# one place that knows which picture belongs to which vial.
-SKU_LABEL_FILE: dict[str, str] = {}
+# ── Sticker artwork ──────────────────────────────────────────────────────────
+# THE FILENAME IS THE MAPPING: static/labels/<SKU>.png. There is deliberately no
+# hand-maintained SKU->file table, because a table is one more copy to drift out
+# of step with reality — the failure mode of §29, §30 and the label album itself,
+# which spells several SKUs differently again (5AM5, KLOW80, HGH10, AD5...).
+#
+# A SKU with no file has NO sticker, and the manifest says so IN RED rather than
+# printing a blank cell: at a bench a blank reads as "no sticker needed". Never
+# point a SKU at "close enough" artwork — a sticker with the wrong strength on it
+# is the exact failure this whole manifest exists to prevent, which is why the
+# label mapping matches on product AND dose and refuses anything less.
+LABEL_DIR = Path(__file__).parent.parent / "static" / "labels"
+LABEL_EXTENSIONS = (".png", ".jpg", ".jpeg")
+
+
+def label_path(sku: str):
+    """Filesystem path to a SKU's sticker image, or None if none is on file."""
+    key = (sku or "").strip().upper()
+    if not key:
+        return None
+    for ext in LABEL_EXTENSIONS:
+        p = LABEL_DIR / f"{key}{ext}"
+        if p.is_file():
+            return p
+    return None
+
+
+def _load_label_text() -> dict[str, str]:
+    """What is PRINTED on each sticker, keyed by SKU.
+
+    Not the catalog name: the stickers carry Northline's own product naming
+    ("GLP-3 RT" for Retatrutide, "WOLVERINE", "MT-2"), and a crew matching the
+    sheet against a sheet of stickers needs the printed wording, not ours.
+    Generated from the label album filenames; edit the JSON, not this code.
+    """
+    import json
+    f = LABEL_DIR / "label_text.json"
+    if not f.is_file():
+        return {}
+    try:
+        return {str(k).upper(): str(v) for k, v in json.loads(f.read_text()).items()}
+    except Exception as e:                       # never let bad JSON break pricing
+        print(f"[catalog] could not read {f}: {e!r}")
+        return {}
+
+
+SKU_LABEL_TEXT: dict[str, str] = _load_label_text()
+
+
+def labels_missing() -> list[str]:
+    """Every SKU with no sticker on file — the gap list to chase with Jordan."""
+    return sorted(s for s in BY_SKU if label_path(s) is None)
+
+
+def labels_orphaned() -> list[str]:
+    """Sticker files that match no SKU we sell — artwork for a discontinued or
+    not-yet-listed product. Harmless, but worth knowing about."""
+    if not LABEL_DIR.is_dir():
+        return []
+    return sorted(p.stem for p in LABEL_DIR.iterdir()
+                  if p.suffix.lower() in LABEL_EXTENSIONS and p.stem.upper() not in BY_SKU)
 
 # ── Customs risk ─────────────────────────────────────────────────────────────
 # The 2 kg package cap is about SEIZURE RISK, not carrier limits: a small parcel
@@ -224,7 +282,7 @@ def _build() -> tuple[dict[str, Item], dict[tuple[str, str], Item]]:
                 floor_price=(math.ceil(cost * pricing.MARKUP_FLOOR) if cost else None),
                 unit_weight_g=float(weight),
                 weight_source=source,
-                label_file=SKU_LABEL_FILE.get(sku),
+                label_file=None,   # filled in below, once label_path() is defined
             )
             by_sku[sku] = item
             by_key[k] = item
@@ -234,6 +292,13 @@ def _build() -> tuple[dict[str, Item], dict[tuple[str, str], Item]]:
 
 BY_SKU, _BY_KEY = _build()
 ITEMS: list[Item] = list(BY_SKU.values())
+
+# label_file mirrors label_path() so an Item is self-contained for callers that
+# already hold one. The FILE ON DISK stays the source of truth — this is a cache
+# filled once at import, not a second registry to keep in step.
+for _item in ITEMS:
+    _p = label_path(_item.sku)
+    _item.label_file = _p.name if _p else None
 
 
 # ── Lookup ───────────────────────────────────────────────────────────────────
@@ -322,7 +387,8 @@ def catalog_summary() -> str:
         f"{len(ITEMS)} SKUs — {len(lyo)} lyophilized, {len(liq)} liquid",
         f"weights: {len(ITEMS) - len(heavy)} from form default, {len(heavy)} overridden "
         f"({', '.join(sorted({i.product for i in heavy})) or 'none'})",
-        f"labels:  {sum(1 for i in ITEMS if i.label_file)} of {len(ITEMS)} SKUs have artwork",
+        f"labels:  {len(ITEMS) - len(labels_missing())} of {len(ITEMS)} SKUs have a sticker"
+        + (f", {len(labels_orphaned())} orphaned" if labels_orphaned() else ""),
     ]
     probs = {k: v for k, v in audit().items() if v}
     lines.append("audit:   clean" if not probs else f"audit:   {probs}")

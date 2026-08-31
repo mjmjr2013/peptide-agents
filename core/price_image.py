@@ -23,6 +23,13 @@ else:
     XLS_PATH       = _ICLOUD / "price_list.xls"
     PDF_PATH       = _ICLOUD / "price_list.pdf"
 
+# The stamp deliberately follows the SAME branch as the artifacts above. That is
+# what makes the iCloud mistake detectable: regenerate on the Mac without
+# RAILWAY_ENVIRONMENT and the stamp lands in iCloud beside the sheets nobody
+# ships, while the tracked one in static/ stays old — and the test goes red.
+# See regenerate_all() and HANDOFF §30a/§30b.
+STAMP_PATH = XLSX_PATH.parent / "price_list.stamp.json"
+
 CATEGORIES = [
     ("GLP-1 Peptides", [
         ("SM5",    "Semaglutide",           "5mg",      "$58"),
@@ -88,10 +95,6 @@ CATEGORIES = [
         ("AP5",    "Adipotide",             "5mg",      "$166"),
         ("RA10",   "Ara-290",               "10mg",     "$149"),
         ("RA16",   "Ara-290",               "16mg",     "$238"),
-        ("DR2",    "Dermorphin",            "2mg",      "$72"),
-        ("DR5",    "Dermorphin",            "5mg",      "$125"),
-        ("DR10",   "Dermorphin",            "10mg",     "$199"),
-        ("DR20",   "Dermorphin",            "20mg",     "$332"),
         ("NP810",  "Snap-8",                "10mg",     "$133"),
         ("NP8100", "Snap-8",                "100mg",    "$663"),
         ("LC216",  "Lipo-C",                "10ml",     "$92"),
@@ -790,10 +793,163 @@ def generate_price_list_xls() -> Path:
     return XLS_PATH
 
 
+# ── Regenerating the sheets customers actually receive ───────────────────────
+# HANDOFF §30a: bac water went $12 -> $17 in core/pricing, but static/price_list
+# .{xlsx,xls,pdf} are TRACKED IN GIT and main.py only rebuilds them `if not
+# exists()`. On Railway they exist, so production would have gone on serving a
+# $12 sheet while the agent quoted $17 — one number sent, another charged.
+#
+# Two things went wrong and both are addressed here. The regeneration ran on the
+# Mac without RAILWAY_ENVIRONMENT, so it wrote to iCloud (Jordan's reference
+# copies) and not to static/. And it ran only SOME of the generators, so the
+# formats could drift apart. regenerate_all() does the whole set in one call and
+# records what it did.
+
+def price_fingerprint() -> str:
+    """A hash of every (SKU, price) pair on the sheet.
+
+    This is what a generated artifact is stamped with. It changes if and only if
+    a customer-visible price changes, so a stamp that no longer matches means
+    the committed sheets predate the current prices.
+    """
+    import hashlib
+    payload = ";".join(f"{sku}={pstr}" for _cat, rows in CATEGORIES
+                       for sku, _p, _s, pstr in sorted(rows))
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
+STAMPED_ARTIFACTS = ["price_list.xlsx", "price_list.xls", "price_list.pdf"]
+
+
+def _sha256(path: Path) -> str:
+    import hashlib
+    return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+
+
+class CJKFontMissing(RuntimeError):
+    """The Chinese font is not installed, so every CJK glyph would render as a
+    hollow box. This is silent in matplotlib — it substitutes and carries on —
+    and a price sheet full of tofu still opens fine, so nothing downstream would
+    have caught it. Verified on 2026-08-31: a Linux container with no Songti SC
+    produced a PDF whose entire Chinese footer was boxes."""
+
+
+# The fonts the Chinese renderer ACTUALLY asks for, in order — this list must
+# stay identical to the rcParams["font.family"] set in generate_price_list_image
+# for lang="cn", minus the DejaVu Sans fallback at the end. DejaVu is what
+# renders the tofu: it resolves on every machine and contains no CJK glyphs, so
+# a guard that accepts it (or that accepts any CJK font the renderer will never
+# ask for) passes while the output is still boxes. That is exactly what happened
+# on 2026-08-31 — the container had a CJK font installed, the guard said fine,
+# and the PDF came out full of empty squares.
+CJK_FONTS = ["Songti SC", "PingFang HK", "Hiragino Sans GB", "Arial Unicode MS"]
+
+
+def _assert_cjk_font_available() -> str:
+    """The sheets are bilingual. Refuse to build them on a machine that cannot
+    draw Chinese, rather than shipping a sheet of empty boxes to a buyer.
+
+    Asks matplotlib to resolve each font the way the renderer will, with the
+    default fallback DISABLED — otherwise findfont happily returns DejaVu and
+    reports success.
+    """
+    from matplotlib import font_manager
+    from matplotlib.font_manager import FontProperties
+    for name in CJK_FONTS:
+        try:
+            font_manager.findfont(FontProperties(family=name),
+                                  fallback_to_default=False)
+            return name
+        except Exception:
+            continue
+    raise CJKFontMissing(
+        "none of the fonts the Chinese price sheet asks for are installed "
+        f"({', '.join(CJK_FONTS)}). Building here would render every Chinese "
+        "character as an empty box — matplotlib substitutes DejaVu Sans and says "
+        "nothing. Build the sheets on Jordan's Mac.")
+
+
+def verify_static_sheets() -> str:
+    """Read the workbook in static/ and confirm it carries today's prices.
+
+    Returns the fingerprint it verified. Raises if the committed sheet disagrees
+    with CATEGORIES — which is precisely the §30a failure: code says $17, the
+    file a customer downloads says $12.
+    """
+    import openpyxl
+    import re as _re
+    xlsx = _STATIC / "price_list.xlsx"
+    if not xlsx.is_file():
+        raise FileNotFoundError(f"{xlsx} is missing — main.py serves it directly")
+    served: dict[str, float] = {}
+    for row in openpyxl.load_workbook(xlsx).active.iter_rows(values_only=True):
+        sku, _product, _spec, price = (list(row) + [None] * 4)[:4]
+        if sku and isinstance(price, str) and price.strip().startswith("$"):
+            served[str(sku).strip()] = float(_re.sub(r"[^0-9.]", "", price))
+    expected = {sku: float(_re.sub(r"[^0-9.]", "", pstr))
+                for _cat, rows in CATEGORIES for sku, _p, _s, pstr in rows}
+    if served != expected:
+        bad = {k: (served.get(k), expected.get(k))
+               for k in set(served) | set(expected) if served.get(k) != expected.get(k)}
+        raise ValueError(f"static/price_list.xlsx does not match the price sheet: {bad}")
+    return price_fingerprint()
+
+
+def stamp_static_sheets() -> dict:
+    """Certify the committed sheets against today's prices, by content hash.
+
+    The stamp records a sha256 of each binary, so restoring an older .xls or
+    .pdf is detectable even though neither can be read back — .xls needs a
+    library we do not depend on, and the PDF's numbers are drawn with a
+    subsetted font that no text extractor recovers.
+    """
+    import json
+    from datetime import datetime, timezone
+
+    fingerprint = verify_static_sheets()
+    stamp = {
+        "fingerprint": fingerprint,
+        "verified_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "artifacts": {name: _sha256(_STATIC / name) for name in STAMPED_ARTIFACTS},
+    }
+    (_STATIC / "price_list.stamp.json").write_text(
+        json.dumps(stamp, indent=2, ensure_ascii=False) + "\n")
+    print(f"[PriceImage] Stamped static/ sheets as {fingerprint}")
+    return stamp
+
+
+def regenerate_all() -> dict:
+    """Rebuild every price-list artifact, then certify what landed in static/.
+
+    ALWAYS use this rather than calling one generator by hand — the formats are
+    generated separately and that is how they drift apart. To rebuild the files
+    production serves, run it with RAILWAY_ENVIRONMENT=1 set, then commit
+    `static/`:
+
+        RAILWAY_ENVIRONMENT=1 python3 -c "from core.price_image import regenerate_all as r; r()"
+
+    Without that variable the writes go to Jordan's iCloud reference copies and
+    production keeps serving whatever is committed — the §30a near miss.
+    """
+    _assert_cjk_font_available()
+    written = {
+        "png_en": str(generate_price_list_image()),
+        "png_cn": str(generate_price_list_image_cn()),
+        "xlsx": str(generate_price_list_xlsx()),
+        "xls": str(generate_price_list_xls()),
+        "pdf": str(generate_price_list_pdf()),
+    }
+    to_static = XLSX_PATH.parent.name == "static"
+    if not to_static:
+        print("[PriceImage] ⚠️  These went to iCloud, NOT to static/. Customers are "
+              "served static/. Re-run with RAILWAY_ENVIRONMENT=1 and commit static/.")
+        return {"artifacts": written, "to_static": False}
+    stamp = stamp_static_sheets()
+    stamp["artifacts_written"] = written
+    stamp["to_static"] = True
+    return stamp
+
+
 if __name__ == "__main__":
-    generate_price_list_image()
-    generate_price_list_image_cn()
-    generate_price_list_xlsx()
-    generate_price_list_xls()
-    generate_price_list_pdf()
+    regenerate_all()
     print("Done.")

@@ -163,10 +163,6 @@ CATALOG: list[dict] = [
     # the single-candidate branch of find_item(); a second EPO dose would have
     # made it unpriceable. No price moves: $149 either way.
     {"product": "EPO", "spec": "3000IU x10", "cost": 24.83},
-    {"product": "Dermorphin", "spec": "2mg x10", "cost": 11.86},
-    {"product": "Dermorphin", "spec": "5mg x10", "cost": 20.69},
-    {"product": "Dermorphin", "spec": "10mg x10", "cost": 33.10},
-    {"product": "Dermorphin", "spec": "20mg x10", "cost": 55.17},
     # $12 -> $17 on 2026-08-31, Jordan's call. This is a FREIGHT price, not a
     # margin change: a bac water kit is 270 g against 75 g for a lyophilized one
     # and sells for $17, so bulk water was buying free shipping ($1,000 of it is

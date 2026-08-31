@@ -46,6 +46,19 @@ INTENTIONAL_CHANGES = [
 ]
 
 
+# Products removed from the catalog since the baseline was frozen. A SKU leaves
+# BASELINE only by being listed here — otherwise test_baseline_covers_every_sku
+# would let a product quietly disappear from the price list, which is the same
+# class of silent change the baseline exists to catch.
+REMOVED_SKUS = [
+    # (SKU, date, who decided, why)
+    ("DR2",  "2026-08-31", "Jordan", "Dermorphin discontinued — not sold any more"),
+    ("DR5",  "2026-08-31", "Jordan", "Dermorphin discontinued — not sold any more"),
+    ("DR10", "2026-08-31", "Jordan", "Dermorphin discontinued — not sold any more"),
+    ("DR20", "2026-08-31", "Jordan", "Dermorphin discontinued — not sold any more"),
+]
+
+
 BASELINE: dict[str, float] = {
     '10AD'      :   332.00,   # AOD-9604 10mg
     '2AD'       :   100.00,   # AOD-9604 2mg
@@ -84,10 +97,6 @@ BASELINE: dict[str, float] = {
     'CRY20'     :   290.00,   # Crystagen 20mg
     'CU100'     :   116.00,   # GHK-Cu 100mg
     'CU50'      :    71.00,   # GHK-Cu 50mg
-    'DR10'      :   199.00,   # Dermorphin 10mg
-    'DR2'       :    72.00,   # Dermorphin 2mg
-    'DR20'      :   332.00,   # Dermorphin 20mg
-    'DR5'       :   125.00,   # Dermorphin 5mg
     'DS10'      :   104.00,   # DSIP 10mg
     'DS2'       :    38.00,   # DSIP 2mg
     'DS5'       :    58.00,   # DSIP 5mg
@@ -250,3 +259,22 @@ def test_every_baseline_price_still_clears_its_floor():
              for sku in BASELINE
              if catalog.get(sku).floor_price and BASELINE[sku] < catalog.get(sku).floor_price]
     assert under == [], f"priced below the 3x floor: {under}"
+
+
+def test_removed_skus_are_really_gone():
+    """A discontinued product must leave every catalog copy, not just the sheet —
+    otherwise Lily still quotes it from her prompt and the order cannot be filled."""
+    from core import pricing
+    for sku, _date, _who, _why in REMOVED_SKUS:
+        assert sku not in BASELINE, f"{sku} is logged as removed but is still in BASELINE"
+        assert catalog.get(sku) is None, f"{sku} is logged as removed but is still in the catalog"
+    gone = {r[0] for r in REMOVED_SKUS}
+    assert not gone & {s for s, _p, _sp, _pr in SHEET}, "a removed SKU is still on the price sheet"
+
+
+def test_a_removed_product_no_longer_prices():
+    """It must fail CLOSED: an order line for it is refused and escalated to a
+    human (HANDOFF §29), never quietly sold from a stale row."""
+    from core import pricing
+    assert pricing.get_list_price("Dermorphin", "10mg") is None
+    assert catalog.find("Dermorphin", "10mg") is None
