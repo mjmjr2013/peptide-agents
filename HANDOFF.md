@@ -4,7 +4,7 @@ Paste this into a fresh Claude Code session (run from `~/peptide-agents`) to con
 It describes the live WhatsApp sales agent, the new order/payment/fulfillment system,
 how to deploy/debug, and what's outstanding. No secret tokens are stored here.
 
-**Last updated 2026-08-31. Read §30 FIRST — it is the newest.** §30 consolidates the catalog
+**Last updated 2026-08-30. Read §30a FIRST — it is the newest.** §30 consolidates the catalog
 into one SKU-keyed source of truth with real weights, closes the bac-water shipping hole by pricing
 freight into the product ($12 → $17, both waters) rather than by a weight rule, and fixes a hole in
 the §29 test suite itself: it could not have caught a price being edited. NOT YET DEPLOYED.
@@ -869,7 +869,7 @@ floor; `website/coa.html` still holds a third hardcoded catalog; colloquial name
 prints it in the clear, and so does any tool output that includes it). Nothing here changed that, but
 it should be rotated and moved to a credential helper.
 
-## 30. Consolidated catalog + weight-aware shipping (2026-08-31) — NOT YET DEPLOYED
+## 30. Consolidated catalog + weight-aware shipping (2026-08-31) — DEPLOYED (see §30a)
 
 Step two of the consolidation §29 started. §29 stopped unpriceable lines from shipping free; this
 section gives the catalog a single SKU-keyed identity and, for the first time, a **weight**.
@@ -998,3 +998,35 @@ a human reads.** Do not regenerate it wholesale to turn a red test green.
 4. Still open, unchanged: the WhatsApp smoke test through a non-operator handset; Daniel's lab check
    on the Sermorelin cost (§29); and the **GitHub PAT embedded in the `origin` remote URL** (§29a) —
    still unrotated.
+
+## 30a. §30 deployed (2026-08-30) — and the stale price sheets it nearly shipped over
+
+Deployed `f7d4e73` from Claude Code on the Mac. 402 tests green, catalog `audit(): clean`, Railway
+force-deploy by SHA (§10), running commit confirmed as `f7d4e73` — the service had still been on
+`1aa2007`, so auto-deploy had again not picked the push up (§10 holds).
+
+**What `deploy_catalog_v2.sh` got wrong, and why it matters.** Its regeneration step ran
+`generate_price_list_image()` only, which on the Mac writes to the **iCloud** folder — Jordan's own
+copies. But `static/price_list.pdf`, `.xls` and `.xlsx` are **tracked in git**, were the 2026-06-22
+build still showing **$12** water, and `main.py:138,173,186` regenerate them only `if not
+...exists()`. On Railway those committed files exist, so the app would have gone on serving a $12
+price sheet from `/price-list.xlsx`, `/北线集团研究肽价格表.xlsx`, `/price-list.xls` and
+`/price-list.pdf` for as long as the files stayed committed — while `core/pricing` quoted $17. A
+customer would have been sent one number and charged another.
+
+Fixed by regenerating with `RAILWAY_ENVIRONMENT=1` so the writes land in `static/`, exactly as §10
+step 1 already prescribes; the three binaries are in the deploy commit. Verified after deploy by
+pulling `/price-list.xlsx` off production and reading the cells: both waters read $17.
+
+The two PNGs are gitignored, so they were never part of this problem — they self-heal on each
+deploy. That asymmetry is the trap: the file you check by eye is the one that was already fine.
+
+**If a price ever moves again, regenerate with `RAILWAY_ENVIRONMENT=1` and commit `static/`.** The
+iCloud copies are Jordan's reference, not what customers receive. `deploy_catalog_v2.sh` still has
+the wrong command in step 3 — it was committed as-is for the record; fix or delete it before reuse.
+
+Not done this session, unchanged from §30: the WhatsApp smoke test through a non-operator handset,
+Daniel's Sermorelin cost check, and the GitHub PAT still embedded in the `origin` remote URL (§29a).
+Also unresolved: this machine cannot write to the iCloud folder at all — macOS denies the process
+access to `~/Library/Mobile Documents/...`, so Jordan's own price-sheet copies are still the old
+build and need regenerating from a terminal that has Full Disk Access.
