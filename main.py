@@ -256,7 +256,29 @@ def start_webhook_server(port: int = 5000):
             if saved:
                 banner = f'<div class="ok">&#10003; Tracking saved for {escape(saved)}.</div>'
             elif photo:
-                banner = f'<div class="ok">&#10003; Vial photo sent to the customer for {escape(photo)}.</div>'
+                # The upload handler reports what it actually managed to do. A
+                # blanket "sent to the customer" here once claimed success for a
+                # failed upload AND for a partial job the code deliberately did
+                # not send — the crew would have stopped chasing either one.
+                st = request.args.get("st", "")
+                if st == "sent":
+                    banner = ('<div class="ok">&#10003; Vial photo sent to the customer '
+                              f'for {escape(photo)}.</div>')
+                elif st.startswith("partial:"):
+                    _p = st.split(":")
+                    have, need = (_p[1], _p[2]) if len(_p) == 3 else ("?", "?")
+                    banner = ('<div class="ok">&#10003; Photo saved for '
+                              f'{escape(photo)} &mdash; {escape(have)} of {escape(need)} '
+                              'packages done. The customer is messaged once every '
+                              'package has a photo.</div>')
+                elif st == "savedonly":
+                    banner = ('<div class="warn">&#9888; Photo saved for '
+                              f'{escape(photo)}, but sending it to the customer '
+                              'FAILED. Please tell the office.</div>')
+                else:
+                    banner = ('<div class="warn">&#9888; That photo did NOT save'
+                              + (f' for {escape(photo)}' if photo else '')
+                              + '. Please try again.</div>')
 
             by_id = {o["id"]: o for o in orders}
 
@@ -341,21 +363,37 @@ def start_webhook_server(port: int = 5000):
 
         @app.route("/manifest/photo", methods=["POST"])
         def manifest_photo():
-            """Warehouse uploads a photo of the packed vials for one order. The photo
-            is stored on the order in Airtable (permanent record) and immediately
-            WhatsApped to that order's customer in Lily's voice."""
+            """Warehouse uploads a photo of ONE package's packed vials.
+
+            Per package, like the tracking numbers (Jordan, 2026-08-31): a single
+            photo of a three-parcel order proves nothing about the other two. The
+            package number rides in the filename, so Airtable's attachment field
+            (a list) carries them all with no schema change.
+
+            The customer is messaged only once EVERY package is photographed —
+            that message is the final "about to dispatch" signal (§18a), and it
+            must not fire on a partial job.
+            """
             from flask import request, redirect, abort
             from urllib.parse import quote
             from config import settings
             from core.airtable_client import airtable
+            from core.manifest import photo_filename, parse_photo_packages
             from agents.messaging_agent import send_vial_photo_to_customer
             if not _manifest_authorized(request):
                 abort(403)
+            back = f"/manifest?token={quote(settings.manifest_token)}"
             order_id = request.form.get("order_id", "")
             up = request.files.get("photo")
+            try:
+                index = int(request.form.get("package", "1") or 1)
+                total = int(request.form.get("of", "1") or 1)
+            except (TypeError, ValueError):
+                index, total = 1, 1
             if not order_id or not up or not up.filename:
-                return redirect(f"/manifest?token={quote(settings.manifest_token)}")
+                return redirect(back)
             ref = ""
+            state = "failed"
             try:
                 # Normalize whatever the phone camera produced: fix EXIF rotation,
                 # flatten to RGB JPEG, cap the long edge — keeps it well under the
@@ -371,15 +409,32 @@ def start_webhook_server(port: int = 5000):
 
                 order = airtable.get_order(order_id)
                 ref = order["fields"].get("order_ref", "")
-                url = airtable.attach_vial_photo(order_id, data, f"vials_{ref or order_id}.jpg")
-                phone = airtable.get_lead_phone_for_order(order)
-                name = order["fields"].get("ship_name", "")
-                if send_vial_photo_to_customer(phone, url, name):
-                    airtable.mark_vial_photo_sent(order_id)
+                airtable.attach_vial_photo(
+                    order_id, data, photo_filename(ref or order_id, index, total))
+
+                # Re-read so the completeness check sees what Airtable actually holds
+                # rather than what we think we just wrote.
+                fresh = airtable.get_order(order_id)
+                photos = parse_photo_packages(fresh["fields"])
+                if all(photos.get(i) for i in range(1, total + 1)):
+                    urls = [photos[i] for i in sorted(photos) if photos.get(i)]
+                    phone = airtable.get_lead_phone_for_order(fresh)
+                    name = fresh["fields"].get("ship_name", "")
+                    if send_vial_photo_to_customer(phone, urls, name):
+                        airtable.mark_vial_photo_sent(order_id)
+                        state = "sent"
+                    else:
+                        # Saved, but the customer was NOT reached. Telling the crew
+                        # it went out would end the job here and nobody would chase it.
+                        state = "savedonly"
+                else:
+                    print(f"[Manifest] {ref}: {len(photos)}/{total} packages "
+                          f"photographed — customer not messaged yet")
+                    state = f"partial:{len(photos)}:{total}"
             except Exception as e:
                 print(f"[Manifest] vial photo failed for {order_id}: {e!r}")
-                return redirect(f"/manifest?token={quote(settings.manifest_token)}")
-            return redirect(f"/manifest?token={quote(settings.manifest_token)}&photo={quote(ref)}")
+                state = "failed"
+            return redirect(f"{back}&photo={quote(ref)}&st={quote(state)}")
 
         @app.route("/admin/email-test")
         def admin_email_test():

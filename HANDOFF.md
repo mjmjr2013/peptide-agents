@@ -4,7 +4,11 @@ Paste this into a fresh Claude Code session (run from `~/peptide-agents`) to con
 It describes the live WhatsApp sales agent, the new order/payment/fulfillment system,
 how to deploy/debug, and what's outstanding. No secret tokens are stored here.
 
-**Last updated 2026-08-31. Read §30g FIRST — it is the newest.** §30g sorts the manifest oldest-
+**Last updated 2026-08-31. Read §30i FIRST — it is the newest.** §30i restyles the manifest rows
+as the workbook table (sticker on the right) and makes the vial photo per PACKAGE, matching the
+per-package tracking. §30h records the §30b–§30g deploy.
+
+§30g sorts the manifest oldest-
 first with the wait shown on every row, and fixes two payment-recovery sorts that keyed on a field
 nothing writes.
 
@@ -1419,3 +1423,79 @@ still unrotated; and Jordan's iCloud reference copies of the price sheets, which
 this machine cannot write (macOS denies the process access to
 `~/Library/Mobile Documents/…` — see §30a). `regenerate_price_sheets.sh` writes to
 `static/` on purpose and does not touch them.
+
+## 30i. Sheet-style rows + a vial photo per package (2026-08-31) — NOT YET DEPLOYED
+
+Two revisions from Jordan after seeing §30f live.
+
+### The rows are a table again
+
+§30f rendered each SKU as a flex row with the sticker on the LEFT. Jordan wanted the workbook
+layout the crew already reads — so the rows are now a real `<table>`:
+
+| SKU | Product | Size | Kits | Sticker Label |
+
+**Sticker on the RIGHT**, matching Daniel's sheet, because that is the column they look at while
+they work. `Size` is the strength on its own — the anti-mix-up column from §30c, now with a header
+over it. A test pins both the column ORDER and that the sticker is last, so a future tidy-up cannot
+quietly move it back.
+
+### One vial photo per PACKAGE
+
+Photos were per order; tracking was already per package. A single photo of a three-parcel order
+proves nothing about the other two, so tab 2 now shows an upload box for each package and a
+`1/2 photographed` pill on the headline.
+
+**No Airtable schema change.** `vial_photo` is an attachment field, which holds a LIST, and
+`upload_attachment` appends. The package number rides in the FILENAME
+(`vials_<ref>_pkg2of3.jpg`) and `parse_photo_packages()` reads it back. An attachment with no
+package marker counts as package 1 — that is **every photo taken before today**, so old orders read
+as photographed rather than suddenly looking incomplete.
+
+The customer is messaged **only once every package is photographed**, same rule as tracking (§30f):
+that message is the final "about to dispatch" signal (§18a) and must not fire on a partial job. All
+the photos go in ONE WhatsApp message — Twilio accepts up to 10 media items — with the body naming
+the package count.
+
+⚠️ **Outside the 24h window only the first photo is sent.** The approved media template
+(`VIAL_CONTENT_SID`) carries exactly ONE image, so a multi-package order whose customer has gone
+quiet gets one photo, and the drop is logged rather than silent. Fixing it needs a new template
+approval; §18a records that as slow. Note the bug this nearly caused: passing the list straight into
+`content_variables` would serialize a JSON array into a single-value variable and Twilio would
+reject the whole send — there is a test for it.
+
+### One bug worth recording
+
+Wiring the photo form through `_package()` left the old signature `with_tracking: bool` in place
+while the caller began passing `mode` (a string). `"photo"` is truthy, so **the photo tab rendered
+tracking boxes and no photo upload at all**. Caught by an existing test asserting tab 2 offers an
+upload — the kind of thing that reads fine in review and is only caught by running it.
+
+**933 passing.**
+
+### A second bug, caught reviewing this before deploy
+
+The rewritten upload handler dropped the early `return` from its `except`, so a FAILED upload fell
+through into the success redirect — and a duplicate unreachable `return` sat below it. The page
+then told the crew **"Vial photo sent to the customer"** in two cases where nothing was sent:
+
+- the upload threw, and
+- the job was PARTIAL (1 of 3 packages), which this very section says must not message the customer.
+
+Either one silently ends the work: nobody re-uploads a photo the page called sent, and nobody
+chases a customer the page said was messaged. The green banner was the whole signal.
+
+The handler now reports what it actually did — `sent`, `partial:have:need`, `savedonly` (stored but
+the WhatsApp send failed) or `failed` — and only `sent` claims the customer was messaged. Failures
+render in a new red `.warn` style rather than the green one, because the crew reads colour before
+words. `test_manifest_page.py` pins each of the four banners, that a `.warn` style exists at all,
+and that main.py still branches on all four — so the tests cannot pass against a drifted copy.
+
+Both bugs in this section are the same shape: a signature or a control-flow edge changed underneath
+code that still read correctly. **933 passing did not catch either.** Tests covered what the page
+renders, not what it says after a write fails.
+
+### To deploy
+Code only — no labels to unzip, no price sheets to regenerate (the catalog is untouched).
+`python3 -m pytest tests/ -q` → **940 passed**, then commit, push, force-deploy by SHA and confirm
+the running commit (§10 — auto-deploy has now missed five for five).

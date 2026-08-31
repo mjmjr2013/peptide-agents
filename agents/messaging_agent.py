@@ -1955,26 +1955,47 @@ def send_tracking_to_customer(phone: str, tracking, name: str = "") -> bool:
         return False
 
 
-def send_vial_photo_to_customer(phone: str, media_url: str, name: str = "") -> bool:
-    """WhatsApp a customer the photo of their packed vials in Lily's voice.
+def send_vial_photo_to_customer(phone: str, media_url, name: str = "") -> bool:
+    """WhatsApp a customer the photo(s) of their packed vials in Lily's voice.
+
+    `media_url` is a URL, or a LIST when the order ships in several packages —
+    one photo per parcel (§30i). Twilio accepts up to 10 media items on a single
+    message, so they go together rather than as a burst.
+
     Uses the approved WhatsApp media template when their 24h window is closed.
     Returns True if sent. Best-effort — logs and returns False on failure."""
-    if not phone or not media_url:
+    urls = [u for u in ([media_url] if isinstance(media_url, str) else list(media_url or []))
+            if u]
+    if not phone or not urls:
         return False
     from_number = settings.twilio_whatsapp_from if "whatsapp" in phone else settings.twilio_phone_number
     dear = f"{name}, " if name else ""
-    body = (f"Look, {dear}dear! 😊 Your vials are packed and ready — I wanted you to see them "
-            f"before they ship. Everything is prepared with care. Thank you again for your "
-            f"order, dear! 🙏")
+    if len(urls) == 1:
+        body = (f"Look, {dear}dear! 😊 Your vials are packed and ready — I wanted you to see them "
+                f"before they ship. Everything is prepared with care. Thank you again for your "
+                f"order, dear! 🙏")
+    else:
+        body = (f"Look, {dear}dear! 😊 Your vials are packed and ready — here is a photo of each "
+                f"of your {len(urls)} packages so you can see everything before it ships. "
+                f"Everything is prepared with care. Thank you again for your order, dear! 🙏")
     try:
         if _whatsapp_window_open(phone) or not settings.vial_content_sid:
+            # Twilio caps media at 10 per message; more packages than that is not a
+            # thing today (the largest split so far is 14 water kits in ONE box).
             msg = twilio_client.messages.create(body=body, from_=from_number, to=phone,
-                                                media_url=[media_url])
+                                                media_url=urls[:10])
             airtable.log_message(phone, "outbound", body + " [sent vial photo]")
         else:
+            # ⚠️ The approved media template carries exactly ONE image, so outside
+            # the 24h window only the first package's photo goes out. Passing the
+            # list here would serialize a JSON array into a single-value variable
+            # and Twilio would reject the whole send.
+            if len(urls) > 1:
+                print(f"[VialPhoto] window closed for {phone}: sending 1 of "
+                      f"{len(urls)} photos via template")
             msg = twilio_client.messages.create(
                 content_sid=settings.vial_content_sid,
-                content_variables=json.dumps({"1": media_url}),
+                content_variables=json.dumps({"1": urls[0]}),
                 from_=from_number, to=phone)
             airtable.log_message(phone, "outbound", "[template] vial photo sent")
         print(f"[VialPhoto] Sent vial photo to {phone}: SID={msg.sid}")

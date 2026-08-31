@@ -38,20 +38,27 @@ def _sticker(row: dict) -> str:
 
 
 def _sku_rows(pkg: dict) -> str:
-    out = []
+    """A real table, laid out like the sheet Daniel produced and the crew already
+    reads: SKU, product, size, quantity — and the sticker on the RIGHT, which is
+    the column they look at while they work."""
+    body = []
     for r in pkg["rows"]:
         kits = r["kits"]
-        out.append(
-            '<div class="row">'
-            + _sticker(r)
-            + '<div class="rmeta">'
-            + f'<div class="rsku">{escape(r["sku"])}</div>'
-            + f'<div class="rname">{escape(r["label_text"])}</div>'
-            + '</div>'
-            + f'<div class="rstr">{escape(r["strength"])}</div>'
-            + f'<div class="rkits"><b>{kits}</b><span>kit{"s" if kits != 1 else ""}</span></div>'
-            + '</div>')
-    return "".join(out)
+        body.append(
+            '<tr>'
+            f'<td class="c-sku">{escape(r["sku"])}</td>'
+            f'<td class="c-name">{escape(r["label_text"])}</td>'
+            f'<td class="c-size">{escape(r["strength"])}</td>'
+            f'<td class="c-kits">{kits}</td>'
+            f'<td class="c-label">{_sticker(r)}</td>'
+            '</tr>')
+    return ('<table class="sheet"><thead><tr>'
+            '<th class="c-sku">SKU</th>'
+            '<th class="c-name">Product</th>'
+            '<th class="c-size">Size</th>'
+            '<th class="c-kits">Kits</th>'
+            '<th class="c-label">Sticker Label</th>'
+            '</tr></thead><tbody>' + "".join(body) + '</tbody></table>')
 
 
 def _tracking_form(view: dict, pkg: dict, token: str) -> str:
@@ -78,29 +85,52 @@ def _tracking_form(view: dict, pkg: dict, token: str) -> str:
               '<button type="submit">Save</button></form>')
 
 
-def _package(view: dict, pkg: dict, token: str, with_tracking: bool) -> str:
+def _package(view: dict, pkg: dict, token: str, mode: str) -> str:
+    """One package: its contents as a sheet, then the action for this tab.
+
+    Tab 1 asks for that package's tracking number, tab 2 for that package's
+    photo. Both are per-package for the same reason — the crew works parcels.
+    """
     water = ('' if pkg["capped"]
              else ' <span class="nocap">water only &mdash; ships whole</span>')
     head = (f'<div class="pkghead">PACKAGE {pkg["index"]} of {pkg["of"]} '
             f'&mdash; {pkg["kits"]} kit{"s" if pkg["kits"] != 1 else ""} '
             f'&mdash; {pkg["gross_g"] / 1000:.2f} kg{water}</div>')
-    trk = _tracking_form(view, pkg, token) if with_tracking else ""
-    return f'<div class="pkg">{head}{_sku_rows(pkg)}{trk}</div>'
+    action = (_tracking_form(view, pkg, token) if mode == TAB_LABEL
+              else _photo_form(view, pkg, token))
+    return f'<div class="pkg">{head}{_sku_rows(pkg)}{action}</div>'
 
 
-def _photo_form(view: dict, token: str) -> str:
+def _photo_form(view: dict, pkg: dict, token: str) -> str:
+    """One photo per PACKAGE, mirroring the tracking boxes.
+
+    The photo shows that parcel's vials with the customer's name and address
+    visible (§16). A single photo of a three-parcel order proves nothing about
+    the other two.
+    """
+    have = view["photos"].get(pkg["index"], "")
+    if have:
+        return ('<div class="trkdone">&#10003; Photo taken for package '
+                f'{pkg["index"]} of {pkg["of"]}'
+                f'<a class="ghost link" href="{escape(have)}" target="_blank" '
+                'rel="noopener">view</a></div>')
+    uid = f'{escape(view["id"])}_{pkg["index"]}'
     return (
-        '<form method="POST" action="/manifest/photo" enctype="multipart/form-data">'
+        '<form method="POST" action="/manifest/photo" enctype="multipart/form-data" '
+        'class="pform">'
         f'<input type="hidden" name="token" value="{token}">'
         f'<input type="hidden" name="order_id" value="{escape(view["id"])}">'
-        '<label class="file">&#128247; Vial photo &mdash; take / choose picture'
-        '<input type="file" name="photo" accept="image/*" required '
+        f'<input type="hidden" name="package" value="{pkg["index"]}">'
+        f'<input type="hidden" name="of" value="{pkg["of"]}">'
+        f'<label class="file" for="f{uid}">&#128247; Photo of package '
+        f'{pkg["index"]} of {pkg["of"]} &mdash; take / choose picture'
+        f'<input id="f{uid}" type="file" name="photo" accept="image/*" required '
         "onchange=\"this.closest('form').querySelector('button').disabled=!this.files.length;"
         "this.closest('label').classList.add('picked');"
         "this.closest('label').firstChild.textContent='\\ud83d\\udcf7 '+this.files[0].name+' ';\">"
         '</label>'
         '<button type="submit" class="photo-btn" disabled '
-        "onclick=\"this.textContent='Sending…'\">Send photo to customer</button></form>")
+        "onclick=\"this.textContent='Sending…'\">Save photo</button></form>")
 
 
 # How long an order has waited before it needs chasing. Amber at a week, red at
@@ -144,11 +174,12 @@ def _card(view: dict, mode: str, token: str, extra: str = "") -> str:
         pill = (f'<span class="pill">{done}/{n} tracked</span>' if n > 1
                 else '<span class="pill">tracking needed</span>')
     else:
-        pill = '<span class="pill photo">photo needed</span>'
+        done = sum(1 for i in view["photos"] if view["photos"][i])
+        pill = (f'<span class="pill photo">{done}/{n} photographed</span>' if n > 1
+                else '<span class="pill photo">photo needed</span>')
 
     phone = f' &#9742; {escape(view["phone"])}' if view["phone"] else ""
-    packages = "".join(_package(view, p, token, mode == TAB_LABEL)
-                       for p in view["packages"])
+    packages = "".join(_package(view, p, token, mode) for p in view["packages"])
     return (
         '<details class="card"><summary>'
         f'<span class="ref">{escape(view["ref"])}</span>'
@@ -158,9 +189,7 @@ def _card(view: dict, mode: str, token: str, extra: str = "") -> str:
         f'{view["kits"]} kit{"s" if view["kits"] != 1 else ""}</span>'
         f'{pill}</summary><div class="body">'
         f'<div class="addr">{escape(view["address"])}{phone}</div>'
-        f'{extra}{packages}'
-        + (_photo_form(view, token) if mode == TAB_PHOTO else "")
-        + '</div></details>')
+        f'{extra}{packages}</div></details>')
 
 
 CSS = """
@@ -200,19 +229,25 @@ CSS = """
   .pkghead{background:var(--band);color:var(--navy);font-weight:700;font-size:13px;
            border-radius:8px;padding:8px 10px;margin:14px 0 6px}
   .nocap{font-weight:600;color:#4a5568}
-  .row{display:flex;align-items:center;gap:12px;padding:8px 4px;
-       border-bottom:1px solid var(--line)}
-  .sticker{width:150px;flex:0 0 150px;border:1px solid var(--line);border-radius:6px}
-  .nosticker{width:150px;flex:0 0 150px;font-size:11px;font-weight:700;color:#c0392b;
-             border:1.5px dashed #c0392b;border-radius:6px;padding:8px;text-align:center}
-  .rmeta{flex:1 1 auto;min-width:0}
-  .rsku{font-weight:700;font-size:14px}
-  .rname{color:#4b5563;font-size:13px}
-  .rstr{font-weight:800;font-size:19px;color:var(--navy);flex:0 0 auto;
-        min-width:66px;text-align:center}
-  .rkits{flex:0 0 auto;text-align:center;min-width:48px}
-  .rkits b{display:block;font-size:19px}
-  .rkits span{font-size:11px;color:#6b7280}
+  /* The sheet. Column order and the sticker on the right match the workbook
+     Daniel produced, which the crew already knows how to read. */
+  .sheet{width:100%;border-collapse:collapse;table-layout:fixed}
+  .sheet th{background:var(--navy);color:#fff;font-size:12px;font-weight:700;
+            text-align:left;padding:8px 10px}
+  .sheet td{border-bottom:1px solid var(--line);padding:8px 10px;vertical-align:middle}
+  .sheet tr:last-child td{border-bottom:0}
+  .c-sku{width:14%;font-weight:700;font-size:14px}
+  .c-name{width:32%;color:#374151;font-size:14px;word-break:break-word}
+  .c-size{width:13%;font-weight:800;font-size:19px;color:var(--navy);text-align:center}
+  .sheet th.c-size,.sheet th.c-kits{text-align:center}
+  .c-kits{width:9%;font-weight:800;font-size:19px;text-align:center}
+  .c-label{width:32%}
+  .sticker{width:100%;max-width:190px;display:block;border:1px solid var(--line);
+           border-radius:6px}
+  .nosticker{font-size:11px;font-weight:700;color:#c0392b;border:1.5px dashed #c0392b;
+             border-radius:6px;padding:8px;text-align:center;max-width:190px}
+  .pform{margin-top:12px}
+  .link{display:inline-block;text-decoration:none;margin-left:auto}
   .trkform{display:flex;gap:8px;margin-top:10px}
   .trk{flex:1;font-size:16px;padding:11px;border:1px solid #ccc;border-radius:10px}
   .trk.small{font-size:14px;padding:8px;max-width:150px}
@@ -224,6 +259,10 @@ CSS = """
   .inline{display:flex;gap:6px;margin-left:auto}
   .ok{background:#e7f8ec;color:#16692e;border-radius:10px;padding:12px;
       margin-bottom:14px;font-weight:600}
+  /* A photo that did not save, or did not reach the customer, must not look like
+     the green success banner — the crew reads colour before words. */
+  .warn{background:#fdecea;color:#8a1c12;border:1px solid #f0b7b1;border-radius:10px;
+        padding:12px;margin-bottom:14px;font-weight:700}
   .empty{background:#fff;border-radius:14px;padding:28px 16px;text-align:center;color:#555}
   .file{display:block;font-size:15px;font-weight:600;color:#0a84ff;
         border:1.5px dashed #0a84ff;border-radius:10px;padding:12px;text-align:center;
@@ -245,9 +284,14 @@ CSS = """
     details>.body{display:block!important}
     body{background:#fff}
   }
-  @media (max-width:560px){
-    .sticker,.nosticker{width:108px;flex:0 0 108px}
-    .rstr{font-size:17px;min-width:54px}
+  @media (max-width:600px){
+    .sheet th,.sheet td{padding:6px 5px}
+    .c-sku{width:17%;font-size:12px}
+    .c-name{width:27%;font-size:12px}
+    .c-size{width:14%;font-size:15px}
+    .c-kits{width:10%;font-size:15px}
+    .c-label{width:32%}
+    .sheet th{font-size:11px}
   }
 """
 

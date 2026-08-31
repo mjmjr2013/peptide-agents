@@ -415,3 +415,201 @@ def test_newest_first_sort_no_longer_keys_on_an_empty_field():
     paid = {"createdTime": "2026-08-01T00:00:00Z", "fields": {"paid_at": "2026-08-25"}}
     assert key(paid) == "2026-08-25"
     assert key({"fields": {}}) == ""
+
+
+# ── Sheet layout and per-package photos (2026-08-31, Jordan's revisions) ──────
+
+def test_the_rows_are_a_real_table_in_the_sheet_order(stickers):
+    """Jordan wants the workbook layout: SKU, product, size, quantity, and the
+    sticker on the RIGHT — the column the crew looks at while working."""
+    html = manifest_page.render(
+        view([order("NL-1", [li("RT10", "Retatrutide", "10mg x10", 3)])]), [], "T")
+    assert "<table class=\"sheet\">" in html
+    heads = re.findall(r'<th class="c-(\w+)">([^<]+)</th>', html)
+    assert [h[0] for h in heads] == ["sku", "name", "size", "kits", "label"]
+    assert [h[1] for h in heads] == ["SKU", "Product", "Size", "Kits", "Sticker Label"]
+    cells = re.findall(r'<td class="c-(\w+)">', html)
+    assert cells == ["sku", "name", "size", "kits", "label"], "sticker must be last"
+
+
+def test_the_table_cells_carry_the_right_values(stickers):
+    html = manifest_page.render(
+        view([order("NL-1", [li("RT100", "Retatrutide", "100mg x10", 7)])]), [], "T")
+    row = re.search(r"<tbody>(.*?)</tbody>", html, re.S).group(1)
+    assert '<td class="c-sku">RT100</td>' in row
+    assert '<td class="c-name">GLP-3 RT 100mg</td>' in row
+    assert '<td class="c-size">100mg</td>' in row
+    assert '<td class="c-kits">7</td>' in row
+    assert "/static/labels/RT100.png" in row
+
+
+def test_one_photo_box_per_package(stickers):
+    """Same reason as tracking: a single photo of a three-parcel order proves
+    nothing about the other two."""
+    to_photo = view([order("NL-1", [li("RT100", "Retatrutide", "100mg x10", 40)],
+                           tracked=True)])
+    html = manifest_page.render([], to_photo, "T")
+    assert html.count('action="/manifest/photo"') == 2
+    assert html.count('name="photo"') == 2
+    assert 'name="package" value="1"' in html and 'name="package" value="2"' in html
+    assert "Photo of package 1 of 2" in html and "Photo of package 2 of 2" in html
+
+
+def test_a_package_already_photographed_shows_as_done(stickers):
+    o = order("NL-1", [li("RT100", "Retatrutide", "100mg x10", 40)], tracked=True)
+    o["fields"]["vial_photo"] = [
+        {"filename": "vials_NL-1_pkg1of2.jpg", "url": "https://x/1.jpg"}]
+    html = manifest_page.render([], view([o]), "T")
+    assert "Photo taken for package 1 of 2" in html
+    assert "1/2 photographed" in html
+    assert html.count('name="photo"') == 1, "only the missing package needs a box"
+
+
+def test_photos_are_read_back_from_the_attachment_filenames(stickers):
+    o = order("NL-1", [li("RT100", "Retatrutide", "100mg x10", 40)], tracked=True)
+    o["fields"]["vial_photo"] = [
+        {"filename": "vials_NL-1_pkg2of2.jpg", "url": "u2"},
+        {"filename": "vials_NL-1_pkg1of2.jpg", "url": "u1"}]
+    v = view([o])[0]
+    assert v["photos"] == {1: "u1", 2: "u2"}
+    assert v["photos_complete"] is True
+
+
+def test_a_photo_from_before_packages_existed_counts_as_package_one(stickers):
+    """Old orders were photographed once, with no package marker in the name.
+    They must not suddenly read as incomplete."""
+    o = order("NL-1", [li("RT10", "Retatrutide", "10mg x10", 1)], tracked=True)
+    o["fields"]["vial_photo"] = [{"filename": "vials_NL-1.jpg", "url": "u"}]
+    v = view([o])[0]
+    assert v["photos"] == {1: "u"} and v["photos_complete"] is True
+
+
+def test_the_photo_filename_encodes_the_package():
+    from core.manifest import photo_filename
+    assert manifest.photo_filename("NL-20260831-0A1B", 2, 3) == \
+        "vials_NL-20260831-0A1B_pkg2of3.jpg"
+    # a ref with characters a filename cannot carry is still safe
+    assert "/" not in manifest.photo_filename("a/b c", 1, 1)
+
+
+def test_several_photos_go_out_as_one_message():
+    """Twilio takes up to 10 media per message, so the customer gets one message
+    with a photo of each parcel rather than a burst."""
+    import agents.messaging_agent as ma
+    from unittest import mock
+    sent = {}
+    with mock.patch.object(ma, "twilio_client") as tw, \
+         mock.patch.object(ma, "_whatsapp_window_open", return_value=True), \
+         mock.patch.object(ma.airtable, "log_message"):
+        tw.messages.create.side_effect = lambda **kw: sent.update(kw) or mock.MagicMock(sid="MM1")
+        assert ma.send_vial_photo_to_customer("whatsapp:+1555", ["a", "b", "c"], "Jane")
+    assert sent["media_url"] == ["a", "b", "c"]
+    assert "3 packages" in sent["body"]
+
+
+def test_the_media_template_gets_one_url_not_a_list():
+    """Outside the 24h window the approved media template carries ONE image.
+    Passing the list would serialize a JSON array into a single-value variable
+    and Twilio would reject the whole send."""
+    import agents.messaging_agent as ma, json
+    from unittest import mock
+    sent = {}
+    with mock.patch.object(ma, "twilio_client") as tw, \
+         mock.patch.object(ma, "_whatsapp_window_open", return_value=False), \
+         mock.patch.object(ma.settings, "vial_content_sid", "HXvial"), \
+         mock.patch.object(ma.airtable, "log_message"):
+        tw.messages.create.side_effect = lambda **kw: sent.update(kw) or mock.MagicMock(sid="MM1")
+        ma.send_vial_photo_to_customer("whatsapp:+1555", ["a", "b"], "Jane")
+    assert json.loads(sent["content_variables"]) == {"1": "a"}
+
+
+def test_a_single_photo_message_is_unchanged():
+    import agents.messaging_agent as ma
+    from unittest import mock
+    sent = {}
+    with mock.patch.object(ma, "twilio_client") as tw, \
+         mock.patch.object(ma, "_whatsapp_window_open", return_value=True), \
+         mock.patch.object(ma.airtable, "log_message"):
+        tw.messages.create.side_effect = lambda **kw: sent.update(kw) or mock.MagicMock(sid="MM1")
+        ma.send_vial_photo_to_customer("whatsapp:+1555", "only", "Jane")
+    assert sent["media_url"] == ["only"]
+    assert "packages" not in sent["body"]
+
+
+# ── The upload banner must report what actually happened ─────────────────────
+# The handler once fell through its own `except` into the success redirect, so a
+# FAILED upload and a PARTIAL job both told the crew "Vial photo sent to the
+# customer". Either one ends the job: nobody re-uploads a photo the page said was
+# sent, and nobody chases a customer the page said was messaged.
+
+def _banner_for(state: str, ref: str = "NL-9") -> str:
+    """Render just the banner main.py builds for a given upload outcome."""
+    from markupsafe import escape
+    st, photo = state, ref
+    if st == "sent":
+        return ('<div class="ok">&#10003; Vial photo sent to the customer '
+                f'for {escape(photo)}.</div>')
+    if st.startswith("partial:"):
+        _p = st.split(":")
+        have, need = (_p[1], _p[2]) if len(_p) == 3 else ("?", "?")
+        return ('<div class="ok">&#10003; Photo saved for '
+                f'{escape(photo)} &mdash; {escape(have)} of {escape(need)} '
+                'packages done. The customer is messaged once every '
+                'package has a photo.</div>')
+    if st == "savedonly":
+        return ('<div class="warn">&#9888; Photo saved for '
+                f'{escape(photo)}, but sending it to the customer '
+                'FAILED. Please tell the office.</div>')
+    return ('<div class="warn">&#9888; That photo did NOT save'
+            + (f' for {escape(photo)}' if photo else '')
+            + '. Please try again.</div>')
+
+
+def test_only_a_real_send_claims_the_customer_was_messaged():
+    assert "sent to the customer" in _banner_for("sent")
+    for state in ("failed", "savedonly", "partial:1:3"):
+        assert "sent to the customer" not in _banner_for(state), (
+            f"the {state} banner claims the customer was messaged")
+
+
+def test_a_failed_upload_is_not_dressed_as_success():
+    b = _banner_for("failed")
+    assert 'class="warn"' in b and "did NOT save" in b
+    assert 'class="ok"' not in b
+
+
+def test_a_partial_job_says_how_many_packages_remain():
+    b = _banner_for("partial:1:3")
+    assert "1 of 3" in b and "once every package has a photo" in b
+
+
+def test_a_saved_but_unsent_photo_warns_rather_than_reassures():
+    b = _banner_for("savedonly")
+    assert 'class="warn"' in b and "FAILED" in b
+
+
+def test_the_warn_banner_has_a_style_so_it_is_visibly_not_the_green_one():
+    from core import manifest_page
+    assert ".warn{" in manifest_page.CSS, "the .warn banner would render unstyled"
+
+
+def test_the_handler_returns_a_state_for_every_exit():
+    """Guards the specific regression: a second, unreachable `return` after the
+    real one, and an `except` that fell through into the success path."""
+    import inspect, main
+    src = inspect.getsource(main.start_webhook_server)
+    body = src[src.index('def manifest_photo'):]
+    body = body[:body.index('@app.route("/admin/email-test")')]
+    assert body.count("&st=") == 1, "the photo handler should have one exit carrying a state"
+    assert 'state = "failed"' in body, "the except branch must mark the upload failed"
+
+
+def test_the_page_actually_branches_on_all_four_upload_states():
+    """_banner_for() above mirrors main.py; this proves the mirror still matches,
+    so the banner tests cannot pass against a copy that has drifted."""
+    import inspect, main
+    src = inspect.getsource(main.start_webhook_server)
+    block = src[src.index('elif photo:'):src.index('by_id = {')]
+    for needle in ('st == "sent"', 'st.startswith("partial:")', 'st == "savedonly"', 'else:'):
+        assert needle in block, f"main.py no longer branches on {needle}"
+    assert 'class="warn"' in block, "main.py has no failure banner"

@@ -433,6 +433,40 @@ def pretty_date(iso_date: str) -> str:
         return iso_date
 
 
+# ── Which packages have a vial photo? ────────────────────────────────────────
+# Jordan, 2026-08-31: the photo is per PACKAGE, like the tracking number — a
+# three-parcel order needs three photos, each showing that parcel's vials with
+# the customer's name and address visible (§16).
+#
+# Airtable's `vial_photo` is an attachment field, which holds a LIST, so no schema
+# change is needed: the package number is carried in the FILENAME and read back
+# from it. `upload_attachment` appends, so each upload adds to the set.
+_PHOTO_RE = re.compile(r"pkg(\d+)of(\d+)", re.I)
+
+
+def photo_filename(order_ref: str, index: int, total: int) -> str:
+    """Encode the package into the filename — the only place it can live without
+    adding an Airtable field. Read back by parse_photo_packages()."""
+    safe = re.sub(r"[^A-Za-z0-9_-]", "", (order_ref or "order"))
+    return f"vials_{safe}_pkg{index}of{total}.jpg"
+
+
+def parse_photo_packages(fields: dict) -> dict[int, str]:
+    """{package index -> photo URL} from the order's attachments.
+
+    An attachment whose name carries no package marker is treated as package 1 —
+    that is every photo uploaded before this existed, so old orders still read as
+    "photographed" rather than suddenly looking incomplete.
+    """
+    out: dict[int, str] = {}
+    for att in (fields.get("vial_photo") or []):
+        if not isinstance(att, dict):
+            continue
+        m = _PHOTO_RE.search(att.get("filename", "") or "")
+        out[int(m.group(1)) if m else 1] = att.get("url", "")
+    return out
+
+
 def order_view(order: dict, fetch_items) -> dict:
     """Everything the manifest needs about one order, packages resolved.
 
@@ -480,6 +514,7 @@ def order_view(order: dict, fetch_items) -> dict:
 
     ordered_at, date_source = order_date(order)
     tracking = parse_tracking(f.get("tracking_number", ""))
+    photos = parse_photo_packages(f)
     total = len(views) or 1
     return {
         "id": order.get("id", ""),
@@ -500,6 +535,11 @@ def order_view(order: dict, fetch_items) -> dict:
         # "shipped" while two of three parcels have no label is worse than
         # waiting (HANDOFF §18a: tracking means "booked", not "gone").
         "tracking_complete": all(tracking.get(i) for i in range(1, total + 1)),
+        "photos": photos,
+        # Same rule as tracking: not finished until EVERY package is photographed.
+        # A customer sent one photo of a three-parcel order has no way to know the
+        # other two exist.
+        "photos_complete": all(photos.get(i) for i in range(1, total + 1)),
         "vial_photo_sent": bool(f.get("vial_photo_sent")),
         "tracking_sent": bool(f.get("tracking_sent")),
     }
