@@ -1583,9 +1583,16 @@ could not be recovered at all — after a deploy the customer's name reply would
 It now matches a paid order missing ANY required field, and **excludes already-shipped orders** so
 broadening it cannot swallow the next message of a customer whose old order is incomplete.
 
-**A junk name is worse than none.** `_plausible_ship_name()` rejects digits, questions, >5 words and
-a stop-list of chat words, because a missing name is visible on the manifest and gets chased, while a
-wrong one is printed onto the parcel and nobody notices.
+**A junk name is worse than none — but a stop-list that eats real names is worse still.** The first
+version of `_plausible_ship_name()` listed auxiliaries (`will`, `can`, `do`, `may`) and silently
+rejected **"Will Smith", "Can Yilmaz", "Do Van Hai", "Grace Do"**. That does not protect anyone; it
+just loses the name somewhere else. The list is now short and holds only words that are never part of
+a name (`update`, `thanks`, `tracking`, `paid`, …).
+
+The real protection is **contextual, not lexical**: `_merge_shipping` only falls back to the raw
+message when `ship_name` was in what we asked for on the previous turn. Outside that, an unrecognised
+message is left alone rather than guessed at. The extractor path is unaffected — that is the path
+that captures a name arriving unprompted, as Landon's did.
 
 **The manifest makes it impossible to miss.** The name renders bold on its own line above the address
 — that is what the rep copies onto the label and what must be visible in the vial photo. A nameless

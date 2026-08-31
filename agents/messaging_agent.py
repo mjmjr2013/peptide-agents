@@ -450,21 +450,27 @@ _REQUIRED_SHIP = ("ship_name", "address_line1", "city", "country")
 _SHIP_FIELDS = ("ship_name", "address_line1", "address_line2", "city",
                 "state_province", "postal_code", "country")
 
-# Words that mean the message is chat, not a name. Without this a reply like
-# "any update?" could be written onto the shipping label, which is worse than
-# leaving the name blank.
+# Words that are never part of a name, only of chat. Kept deliberately SHORT:
+# an earlier version also listed auxiliaries (will, can, do, may) and silently
+# rejected "Will Smith", "Can Yilmaz", "Do Van Hai" and "Grace Do". A stop-list
+# that eats real names is not a safety feature — it just loses names in a
+# different place. Anything ambiguous is left out and handled by _merge_shipping
+# only accepting a bare reply when we actually asked for the name.
 _NOT_A_NAME = re.compile(
-    r"\b(update|thank|thanks|ok|okay|yes|no|hello|hi|hey|please|when|what|where|"
-    r"how|why|who|can|could|would|should|do|does|did|is|are|was|will|sorry|"
-    r"ship|shipped|shipping|track|tracking|order|paid|payment|sent|send)\b",
+    r"\b(update|updates|thanks|thank|hello|hi|hey|please|sorry|ok|okay|yes|yeah|"
+    r"no|nope|when|where|why|who|which|tracking|track|shipped|shipping|payment|"
+    r"paid|refund|waiting|ready|received|invoice)\b",
     re.I)
 
 
 def _plausible_ship_name(text: str) -> bool:
-    """Is this short free text actually a person's or company's name?
+    """Could this short free text be a person's or company's name?
 
-    Deliberately strict. A missing name is visible on the manifest and gets
-    chased; a WRONG name is printed onto the parcel and nobody notices.
+    A WRONG name is printed onto the parcel and nobody notices, so this rejects
+    anything that reads like chat. But it must not reject real names either — see
+    _NOT_A_NAME above. The stronger protection is contextual, not lexical:
+    _merge_shipping only falls back to the raw message when we just asked for the
+    name (HANDOFF §30k).
     """
     t = (text or "").strip().strip(".,")
     if not (2 <= len(t) <= 60):
@@ -475,10 +481,13 @@ def _plausible_ship_name(text: str) -> bool:
         return False
     if len(t.split()) > 5:
         return False
+    if not any(ch.isalpha() for ch in t):
+        return False
     return not _NOT_A_NAME.search(t)
 
 
-def _merge_shipping(order_id: str, parsed: dict, body: str) -> dict:
+def _merge_shipping(order_id: str, parsed: dict, body: str,
+                    expecting: tuple | list = ()) -> dict:
     """Write any shipping field we now know and the order still lacks.
 
     Returns the order's fields AFTER the write, so callers decide what is still
@@ -503,12 +512,16 @@ def _merge_shipping(order_id: str, parsed: dict, body: str) -> dict:
             v = ""
         if v:
             updates[k] = v
-    # A bare reply — "Landon Anderson", or "USA" — that the extractor returned
-    # nothing for, but which answers the question we just asked.
+    # A bare reply — "Landon Anderson" — that the extractor returned nothing for.
+    # Only trusted when we ASKED for the name on the previous turn: that context is
+    # what makes it safe, far more than any word list could be. Without the ask,
+    # an unrecognised message is left alone rather than guessed at.
     bare = (body or "").strip()
-    if "ship_name" not in updates and not (current.get("ship_name") or "").strip():
-        if _plausible_ship_name(bare):
-            updates["ship_name"] = bare
+    if ("ship_name" in (expecting or ())
+            and "ship_name" not in updates
+            and not (current.get("ship_name") or "").strip()
+            and _plausible_ship_name(bare)):
+        updates["ship_name"] = bare
     if not updates:
         return current
     try:
@@ -1483,7 +1496,10 @@ def handle_inbound(from_phone: str, body: str, name: str = "", media: list | Non
         # because that message had no street (HANDOFF §30k). What is still missing
         # is now read back from the ORDER, not from the message or from memory.
         parsed = _parse_address(body)
-        fields = _merge_shipping(order_id, parsed, body)
+        # What we asked for last turn — the only context in which a bare reply is
+        # taken as the answer.
+        expecting = (pend or {}).get("need_addr_fields") or []
+        fields = _merge_shipping(order_id, parsed, body, expecting)
         missing = _missing_ship_fields(fields) if fields else list(_REQUIRED_SHIP)
 
         if not order_id:

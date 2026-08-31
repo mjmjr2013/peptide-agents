@@ -32,7 +32,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 def test_a_real_name_is_accepted():
     import agents.messaging_agent as ma
-    for good in ("Landon Anderson", "Lumex Health", "Mary-Jane O'Brien", "Li Wei"):
+    for good in ("Landon Anderson", "Lumex Health", "Mary-Jane O'Brien", "Li Wei",
+                 "landon anderson"):
+        assert ma._plausible_ship_name(good), f"rejected a real name: {good!r}"
+
+
+def test_a_name_that_looks_like_a_common_word_is_still_a_name():
+    """The first stop-list included auxiliaries and silently rejected these. A
+    list that eats real names does not protect anyone — it loses the name
+    somewhere else instead."""
+    import agents.messaging_agent as ma
+    for good in ("Will Smith", "Can Yilmaz", "Do Van Hai", "Grace Do", "May Chen",
+                 "Mark Grace", "Art Ross"):
         assert ma._plausible_ship_name(good), f"rejected a real name: {good!r}"
 
 
@@ -48,7 +59,7 @@ def test_chat_is_never_mistaken_for_a_name():
 
 # ── 1 & 2. Accumulate into the order ─────────────────────────────────────────
 
-def _merge(order_fields, parsed, body):
+def _merge(order_fields, parsed, body, expecting=()):
     """Run _merge_shipping against a fake order; return (written, final fields)."""
     import agents.messaging_agent as ma
     written = {}
@@ -60,7 +71,7 @@ def _merge(order_fields, parsed, body):
     with mock.patch.object(ma.airtable, "get_order",
                            return_value={"id": "rec1", "fields": dict(order_fields)}), \
          mock.patch.object(ma.airtable, "set_order_shipping", side_effect=set_shipping):
-        final = ma._merge_shipping("rec1", parsed, body)
+        final = ma._merge_shipping("rec1", parsed, body, expecting)
     return written, final
 
 
@@ -71,9 +82,16 @@ def test_a_name_only_message_is_saved_rather_than_discarded():
     assert final.get("ship_name") == "Landon Anderson"
 
 
-def test_a_bare_name_survives_even_if_the_extractor_returns_nothing():
-    written, _ = _merge({}, {}, "Landon Anderson")
+def test_a_bare_name_is_taken_when_we_just_asked_for_the_name():
+    written, _ = _merge({}, {}, "Landon Anderson", expecting=["ship_name"])
     assert written.get("ship_name") == "Landon Anderson"
+
+
+def test_a_bare_message_is_NOT_guessed_at_when_we_did_not_ask():
+    """Context, not a word list, is the real protection: if we never asked for a
+    name, an unrecognised message is left alone rather than labelled with."""
+    written, _ = _merge({}, {}, "Landon Anderson", expecting=[])
+    assert written == {}
 
 
 def test_an_existing_field_is_never_overwritten():
@@ -87,8 +105,12 @@ def test_an_existing_field_is_never_overwritten():
 
 
 def test_a_question_is_not_written_onto_the_label():
-    written, _ = _merge({}, {}, "any update?")
+    """Even while we are actively waiting for the name."""
+    written, _ = _merge({}, {}, "any update?", expecting=["ship_name"])
     assert written == {}
+    for chat in ("thanks!", "ok", "yes", "when will it ship"):
+        w, _ = _merge({}, {}, chat, expecting=["ship_name"])
+        assert w == {}, f"would have labelled a parcel {chat!r}"
 
 
 def test_the_full_landon_sequence_ends_with_both_name_and_address():
