@@ -180,15 +180,26 @@ def _card(view: dict, mode: str, token: str, extra: str = "") -> str:
 
     phone = f' &#9742; {escape(view["phone"])}' if view["phone"] else ""
     packages = "".join(_package(view, p, token, mode) for p in view["packages"])
+
+    # The name is what goes on the shipping label AND what has to be visible in
+    # the §16 vial photo, so a missing one is a STOP, not a blank space. One order
+    # shipped nameless because the page rendered an empty span and nobody noticed
+    # (HANDOFF §30k).
+    name = (view.get("name") or "").strip()
+    who = (f'<span class="who">{escape(name)}</span>' if name
+           else '<span class="who noname">&#9888; NO NAME</span>')
+    shipto = (f'<div class="shipto">{escape(name)}</div>' if name
+              else '<div class="shipto missing">&#9888; No name on this order &mdash; '
+                   'do not label or photograph it yet. Please tell the office.</div>')
     return (
         '<details class="card"><summary>'
         f'<span class="ref">{escape(view["ref"])}</span>'
-        f'<span class="who">{escape(view["name"])}</span>'
+        f'{who}'
         f'{_age_badge(view)}'
         f'<span class="meta">{n} package{"s" if n != 1 else ""} &middot; '
         f'{view["kits"]} kit{"s" if view["kits"] != 1 else ""}</span>'
         f'{pill}</summary><div class="body">'
-        f'<div class="addr">{escape(view["address"])}{phone}</div>'
+        f'<div class="addr">{shipto}{escape(view["address"])}{phone}</div>'
         f'{extra}{packages}</div></details>')
 
 
@@ -257,6 +268,11 @@ CSS = """
   .trkdone{display:flex;flex-wrap:wrap;align-items:center;gap:8px;color:#16692e;
            font-weight:600;font-size:14px;margin-top:10px}
   .inline{display:flex;gap:6px;margin-left:auto}
+  /* The recipient name, sized to be read off the screen while labelling. */
+  .shipto{font-weight:700;font-size:16px;margin-bottom:2px}
+  .shipto.missing{color:#8a1c12;background:#fdecea;border:1px solid #f0b7b1;
+                  border-radius:8px;padding:8px 10px;font-size:14px}
+  .who.noname{color:#8a1c12;font-weight:800}
   .ok{background:#e7f8ec;color:#16692e;border-radius:10px;padding:12px;
       margin-bottom:14px;font-weight:600}
   /* A photo that did not save, or did not reach the customer, must not look like

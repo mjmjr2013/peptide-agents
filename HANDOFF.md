@@ -4,7 +4,7 @@ Paste this into a fresh Claude Code session (run from `~/peptide-agents`) to con
 It describes the live WhatsApp sales agent, the new order/payment/fulfillment system,
 how to deploy/debug, and what's outstanding. No secret tokens are stored here.
 
-**Last updated 2026-08-31. Read §30j FIRST — it is the newest.** §30i restyles the manifest rows
+**Last updated 2026-08-31. Read §30k FIRST — it is the newest.** §30i restyles the manifest rows
 as the workbook table (sticker on the right) and makes the vial photo per PACKAGE, matching the
 per-package tracking. §30h records the §30b–§30g deploy.
 
@@ -1534,3 +1534,76 @@ Two consequences to know:
 **943 passing.** The test that pinned "template gets one URL, not a list" is kept — that bug is still
 live if anyone passes the list into `content_variables` — and joined by tests that every package
 gets its own message, and that a partial delivery is not reported as sent.
+
+## 30k. The order that shipped with no name (2026-08-31)
+
+`NL-20260822-DDD6` went out with `ship_name` and `country` both empty. The customer had sent both
+name and address. Here is the actual transcript:
+
+```
+02:33:07  IN   Landon Anderson
+02:33:09  IN   773 E 9630 S Sandy UT 84094
+02:33:17  OUT  ...I have your address: Landon Anderson / 773 E 9630 S / Sandy, UT 84094, USA
+02:33:18  OUT  Almost done — just tell me what name should go on the package and which country...
+```
+
+**The name arrived FIRST, in its own message, two seconds ahead of the street.** `_parse_address`
+extracted it correctly. The handler then threw the entire parse away because *that* message had no
+`address_line1` and no `city`:
+
+```python
+addr = _parse_address(body)
+if not addr or not addr.get("address_line1") or not addr.get("city"):
+    ...  # → _handle_ordering, and every field we just parsed is discarded
+```
+
+With no digits in "Landon Anderson" it was routed to Lily's ordinary chat, which is why 02:33:17
+*quotes the name back* — it was in her context, never in Airtable. The address message then filled
+street/city/state/postal, leaving name and country blank, which produced the 02:33:18 follow-up. The
+customer never replied again, and a week later it shipped nameless.
+
+The bare-name fallback (`if not v and k == "ship_name" and ...: v = bare`) would have caught it — but
+it only armed once `need_addr_fields` was set, which happens **after** an address is processed. The
+name came first, so it missed the one net that would have held it.
+
+### What changed
+
+**Partial information is now kept.** Every inbound in `awaiting_address` contributes whatever it
+contains via `_merge_shipping()`, which writes only fields the order does not already have and never
+overwrites. What is still outstanding is recomputed from the **order record**, not from the current
+message and not from `_pending_payments` — so it survives a redeploy and a customer who splits their
+details across messages, in either order.
+
+**A name is now required.** `_REQUIRED_SHIP = (ship_name, address_line1, city, country)`. The
+warehouse cannot print a label or take the §16 photo without one, so it is as blocking as the street.
+
+**Redeploy recovery was also broken for this case.** `get_paid_order_awaiting_address_for_phone`
+queried `AND({payment_status}='paid',{address_line1}='')`, so an order that had a street but no name
+could not be recovered at all — after a deploy the customer's name reply would again be plain chat.
+It now matches a paid order missing ANY required field, and **excludes already-shipped orders** so
+broadening it cannot swallow the next message of a customer whose old order is incomplete.
+
+**A junk name is worse than none.** `_plausible_ship_name()` rejects digits, questions, >5 words and
+a stop-list of chat words, because a missing name is visible on the manifest and gets chased, while a
+wrong one is printed onto the parcel and nobody notices.
+
+**The manifest makes it impossible to miss.** The name renders bold on its own line above the address
+— that is what the rep copies onto the label and what must be visible in the vial photo. A nameless
+order shows `⚠ NO NAME` in the collapsed row and a red *"do not label or photograph it yet"* block
+when expanded, instead of the empty span that let this ship.
+
+### Lily's wording was NOT the problem — no copy was changed
+
+She asked correctly ("please send your shipping details... full name, street address, ..."), and the
+customer complied. The loss was entirely in our handling. Every customer-facing string is byte-for-
+byte what it was; the only additions are asks for `address_line1`/`city`, which previously had no ask
+at all. If Jordan wants Lily to request the details as one message, that is a copy change and his
+call — it would reduce the chance of a split, but the split is now handled either way.
+
+**958 passing** (943 → 958). `tests/test_shipping_name_capture.py` replays the exact two-message
+Landon sequence, and pins that recovery finds a nameless order but ignores a shipped one.
+
+### Still to decide
+`NL-20260822-DDD6` already shipped, so its record is only history — but it is still nameless in
+Airtable. Backfilling "Landon Anderson" from the transcript is a one-line write; left undone
+deliberately, since editing a shipped order's record is Jordan's call.

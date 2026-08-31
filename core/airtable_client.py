@@ -343,16 +343,36 @@ class AirtableClient:
         rows.sort(key=lambda r: r["fields"].get("sent_at", ""))
         return rows[-limit:]
 
+    # The warehouse cannot print a label or take the §16 photo without a NAME, so
+    # a nameless order is just as unshippable as an addressless one.
+    REQUIRED_SHIP_FIELDS = ("ship_name", "address_line1", "city", "country")
+
     def get_paid_order_awaiting_address_for_phone(self, phone: str) -> dict | None:
-        """A paid order for this customer that has no shipping address yet — means we
-        were mid address-collection when state was lost (redeploy recovery)."""
+        """A paid, unshipped order for this customer that is still missing any
+        required shipping field — we were mid address-collection when state was
+        lost (redeploy recovery).
+
+        This used to test `address_line1=''` only, so an order that had a street
+        but NO name could not be recovered: after a deploy the customer's reply
+        with their name was treated as ordinary chat and the name was lost
+        (HANDOFF §30k). Already-shipped orders are excluded — otherwise a customer
+        whose old order is missing a field would have their next message swallowed
+        by address collection.
+        """
         lead = self.find_lead_by_phone(phone)
         if not lead:
             return None
-        for o in self.orders.all(formula="AND({payment_status}='paid',{address_line1}='')"):
-            if lead["id"] in o["fields"].get("lead_id", []):
-                return o
-        return None
+        candidates = []
+        for o in self.orders.all(formula="{payment_status}='paid'"):
+            f = o["fields"]
+            if lead["id"] not in (f.get("lead_id") or []):
+                continue
+            if f.get("tracking_sent") or f.get("tracking_number"):
+                continue                      # already gone out; do not reopen it
+            if any(not (f.get(k) or "").strip() for k in self.REQUIRED_SHIP_FIELDS):
+                candidates.append(o)
+        candidates.sort(key=self._newest_first, reverse=True)
+        return candidates[0] if candidates else None
 
     def get_lead_phone_for_order(self, order_record: dict) -> str:
         """The customer's WhatsApp/phone (from the linked Lead) to send tracking to."""

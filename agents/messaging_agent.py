@@ -442,6 +442,96 @@ def _parse_address(text: str) -> dict:
         return {}
 
 
+# ── Shipping fields: accumulate, never discard ───────────────────────────────
+# The warehouse cannot print a label or take the §16 photo without a recipient
+# NAME, so it is required alongside the address itself.
+_REQUIRED_SHIP = ("ship_name", "address_line1", "city", "country")
+
+_SHIP_FIELDS = ("ship_name", "address_line1", "address_line2", "city",
+                "state_province", "postal_code", "country")
+
+# Words that mean the message is chat, not a name. Without this a reply like
+# "any update?" could be written onto the shipping label, which is worse than
+# leaving the name blank.
+_NOT_A_NAME = re.compile(
+    r"\b(update|thank|thanks|ok|okay|yes|no|hello|hi|hey|please|when|what|where|"
+    r"how|why|who|can|could|would|should|do|does|did|is|are|was|will|sorry|"
+    r"ship|shipped|shipping|track|tracking|order|paid|payment|sent|send)\b",
+    re.I)
+
+
+def _plausible_ship_name(text: str) -> bool:
+    """Is this short free text actually a person's or company's name?
+
+    Deliberately strict. A missing name is visible on the manifest and gets
+    chased; a WRONG name is printed onto the parcel and nobody notices.
+    """
+    t = (text or "").strip().strip(".,")
+    if not (2 <= len(t) <= 60):
+        return False
+    if any(ch.isdigit() for ch in t):
+        return False
+    if "?" in t or "\n" in t:
+        return False
+    if len(t.split()) > 5:
+        return False
+    return not _NOT_A_NAME.search(t)
+
+
+def _merge_shipping(order_id: str, parsed: dict, body: str) -> dict:
+    """Write any shipping field we now know and the order still lacks.
+
+    Returns the order's fields AFTER the write, so callers decide what is still
+    missing from the ORDER RECORD rather than from one message. That is what
+    makes this survive both a redeploy and a customer who sends their name and
+    their street in two separate messages (HANDOFF §30k).
+    """
+    if not order_id:
+        return {}
+    try:
+        current = airtable.get_order(order_id)["fields"]
+    except Exception as e:
+        print(f"[MessagingAgent] could not read order {order_id}: {e!r}")
+        return {}
+    updates = {}
+    for k in _SHIP_FIELDS:
+        if (current.get(k) or "").strip():
+            continue                      # never overwrite what we already have
+        v = (parsed.get(k) or "").strip()
+        if k == "ship_name" and v and not _plausible_ship_name(v):
+            print(f"[MessagingAgent] rejected implausible ship_name {v!r}")
+            v = ""
+        if v:
+            updates[k] = v
+    # A bare reply — "Landon Anderson", or "USA" — that the extractor returned
+    # nothing for, but which answers the question we just asked.
+    bare = (body or "").strip()
+    if "ship_name" not in updates and not (current.get("ship_name") or "").strip():
+        if _plausible_ship_name(bare):
+            updates["ship_name"] = bare
+    if not updates:
+        return current
+    try:
+        airtable.set_order_shipping(order_id, **updates)
+        print(f"[MessagingAgent] shipping fields captured: {sorted(updates)}")
+        current.update(updates)
+    except Exception as e:
+        print(f"[MessagingAgent] set_shipping failed: {e!r}")
+    return current
+
+
+def _missing_ship_fields(fields: dict) -> list[str]:
+    return [k for k in _REQUIRED_SHIP if not (fields.get(k) or "").strip()]
+
+
+_SHIP_ASKS = {
+    "ship_name": "what name should go on the package",
+    "country": "which country it ships to",
+    "address_line1": "the street address",
+    "city": "the city",
+}
+
+
 def _validate_line_items(line_items: list[dict]) -> tuple[list[dict], bool, list[dict]]:
     """Build clean line items; clamp any unit price up to the floor/cap minimum.
 
@@ -1386,85 +1476,50 @@ def handle_inbound(from_phone: str, body: str, name: str = "", media: list | Non
             except Exception as e:
                 print(f"[MessagingAgent] address order lookup failed: {e!r}")
 
-        # Follow-up turn: we already have the street address and are collecting the
-        # missing name and/or country.
-        need = (pend or {}).get("need_addr_fields")
-        if need:
-            fill = _parse_address(body)
-            updates = {}
-            for k in need:
-                v = (fill.get(k) or "").strip()
-                bare = body.strip()
-                if not v and k == "ship_name" and 0 < len(bare) <= 60 and not any(c.isdigit() for c in bare):
-                    v = bare  # e.g. they just replied "Lumex Health"
-                if not v and k == "country" and 0 < len(bare) <= 30:
-                    v = bare
-                if v:
-                    updates[k] = v
-            if updates and order_id:
-                try:
-                    airtable.set_order_shipping(order_id, **updates)
-                except Exception as e:
-                    print(f"[MessagingAgent] set_shipping (follow-up) failed: {e!r}")
-            still = [k for k in need if k not in updates]
-            if still:
-                pend["need_addr_fields"] = still
-                asks = {"ship_name": "the name we should put on the package",
-                        "country": "the country it ships to"}
-                return _reply_and_save("Almost done, dear! I just need " +
-                                       " and ".join(asks[k] for k in still) + " 😊")
+        # Every inbound in this stage contributes whatever it contains. The old
+        # code required street AND city in ONE message before it would save
+        # anything, so a customer who sent "Landon Anderson" and their street two
+        # seconds apart had the NAME thrown away — parsed correctly, then dropped
+        # because that message had no street (HANDOFF §30k). What is still missing
+        # is now read back from the ORDER, not from the message or from memory.
+        parsed = _parse_address(body)
+        fields = _merge_shipping(order_id, parsed, body)
+        missing = _missing_ship_fields(fields) if fields else list(_REQUIRED_SHIP)
+
+        if not order_id:
+            print(f"[MessagingAgent] WARNING: no order found to attach address for {from_phone}")
+
+        if fields and not missing:
             _pending_payments.pop(from_phone, None)
             set_stage(from_phone, "ordering")
+            who = (fields.get("ship_name") or "you").strip()
             return _reply_and_save(
-                "All set, dear! 🙏 Your order is confirmed. You will receive your tracking "
-                "number within 1-3 days. Thank you so much — message me anytime! 😊")
+                f"All set, dear! 🙏 Your order is confirmed and will ship to {who}. "
+                f"You will receive your tracking number within 1-3 days from today. "
+                f"Thank you so much — message me anytime if you need anything else!")
 
-        addr = _parse_address(body)
-        if not addr or not addr.get("address_line1") or not addr.get("city"):
-            # Not an address. If it reads like a question/comment (not an address
-            # attempt), let Lily actually answer it — same deafness fix as the
-            # awaiting_payment stage. Stage stays awaiting_address.
-            if not any(ch.isdigit() for ch in body):
-                reply = _handle_ordering(from_phone, conversation,
-                                         airtable.find_lead_by_phone(from_phone))
-                if reply == _MEDIA_SENT:
-                    return ""
-                conversation.append({"role": "assistant", "content": reply})
-                save_conversation(from_phone, conversation)
-                return reply
+        # Nothing new landed and the message reads like a question rather than an
+        # address attempt — let Lily answer it instead of repeating the ask.
+        got_something = bool(fields) and len(missing) < len(_REQUIRED_SHIP)
+        if not got_something and not any(ch.isdigit() for ch in body) and "?" in body:
+            reply = _handle_ordering(from_phone, conversation,
+                                     airtable.find_lead_by_phone(from_phone))
+            if reply == _MEDIA_SENT:
+                return ""
+            conversation.append({"role": "assistant", "content": reply})
+            save_conversation(from_phone, conversation)
+            return reply
+
+        if pend is None:
+            pend = _pending_payments.setdefault(from_phone, {})
+        pend["order_id"] = order_id
+        pend["need_addr_fields"] = missing
+        asks = " and ".join(_SHIP_ASKS[k] for k in missing)
+        if len(missing) >= len(_REQUIRED_SHIP):
             return _reply_and_save(
                 "Sorry dear, I didn't catch the full address. Please send: full name, "
                 "street address, city, state/province, postal code, and country.")
-
-        addr = {k: v for k, v in addr.items() if v}  # never blank out existing fields
-        if order_id:
-            try:
-                airtable.set_order_shipping(order_id, **addr)
-            except Exception as e:
-                print(f"[MessagingAgent] set_shipping failed: {e!r}")
-        else:
-            print(f"[MessagingAgent] WARNING: no order found to attach address for {from_phone}")
-
-        # The warehouse cannot make a label without a recipient name and country —
-        # do NOT say "all set" until we have them.
-        missing = [k for k in ("ship_name", "country") if not addr.get(k)]
-        if missing:
-            if pend is None:
-                pend = _pending_payments.setdefault(from_phone, {})
-            pend["order_id"] = order_id
-            pend["need_addr_fields"] = missing
-            asks = {"ship_name": "what name should go on the package",
-                    "country": "which country it ships to"}
-            return _reply_and_save("Thank you, dear! 🙏 Almost done — just tell me " +
-                                   " and ".join(asks[k] for k in missing) + " 😊")
-
-        _pending_payments.pop(from_phone, None)
-        set_stage(from_phone, "ordering")
-        who = addr.get("ship_name") or "you"
-        return _reply_and_save(
-            f"All set, dear! 🙏 Your order is confirmed and will ship to {who}. "
-            f"You will receive your tracking number within 1-3 days from today. "
-            f"Thank you so much — message me anytime if you need anything else!")
+        return _reply_and_save(f"Thank you, dear! 🙏 Almost done — just tell me {asks} 😊")
 
     existing_lead = airtable.find_lead_by_phone(from_phone)
 
