@@ -1959,11 +1959,14 @@ def send_vial_photo_to_customer(phone: str, media_url, name: str = "") -> bool:
     """WhatsApp a customer the photo(s) of their packed vials in Lily's voice.
 
     `media_url` is a URL, or a LIST when the order ships in several packages —
-    one photo per parcel (§30i). Twilio accepts up to 10 media items on a single
-    message, so they go together rather than as a burst.
+    one photo per parcel (§30i).
 
-    Uses the approved WhatsApp media template when their 24h window is closed.
-    Returns True if sent. Best-effort — logs and returns False on failure."""
+    INSIDE the 24h window: one message carrying every photo (Twilio caps media at
+    10 per message). OUTSIDE it: one approved template message PER photo, because
+    a WhatsApp template header holds exactly one media item (§30j).
+
+    Returns True only if EVERY photo was sent, so a partial delivery does not get
+    marked as a finished job. Best-effort — logs and returns False on failure."""
     urls = [u for u in ([media_url] if isinstance(media_url, str) else list(media_url or []))
             if u]
     if not phone or not urls:
@@ -1986,18 +1989,42 @@ def send_vial_photo_to_customer(phone: str, media_url, name: str = "") -> bool:
                                                 media_url=urls[:10])
             airtable.log_message(phone, "outbound", body + " [sent vial photo]")
         else:
-            # ⚠️ The approved media template carries exactly ONE image, so outside
-            # the 24h window only the first package's photo goes out. Passing the
-            # list here would serialize a JSON array into a single-value variable
-            # and Twilio would reject the whole send.
-            if len(urls) > 1:
-                print(f"[VialPhoto] window closed for {phone}: sending 1 of "
-                      f"{len(urls)} photos via template")
-            msg = twilio_client.messages.create(
-                content_sid=settings.vial_content_sid,
-                content_variables=json.dumps({"1": urls[0]}),
-                from_=from_number, to=phone)
-            airtable.log_message(phone, "outbound", "[template] vial photo sent")
+            # A WhatsApp template header carries exactly ONE media item — that is
+            # the platform, not our approval state, so no new template can ever
+            # carry N photos (checked 2026-08-31; see §30j). Outside the 24h window
+            # we therefore send ONE approved template message PER PACKAGE.
+            #
+            # Do NOT pass the list as the variable: it would serialize a JSON array
+            # into a single-value slot and Twilio would reject the whole send.
+            #
+            # The approved template has exactly one variable (the image), so its
+            # body cannot say "1 of 3" — the photos arrive as N messages with the
+            # same wording. Each parcel still gets its own picture, which is what
+            # §16 needs; the alternative was one stitched grid too small to read
+            # the customer's name and address off.
+            sent_n = 0
+            for i, u in enumerate(urls, 1):
+                try:
+                    msg = twilio_client.messages.create(
+                        content_sid=settings.vial_content_sid,
+                        content_variables=json.dumps({"1": u}),
+                        from_=from_number, to=phone)
+                    sent_n += 1
+                    print(f"[VialPhoto] template {i}/{len(urls)} to {phone}: SID={msg.sid}")
+                except Exception as e:
+                    # Per-photo, so one bad URL cannot cost the customer the rest.
+                    print(f"[VialPhoto] template {i}/{len(urls)} to {phone} FAILED: {e!r}")
+            airtable.log_message(
+                phone, "outbound",
+                f"[template] vial photo sent ({sent_n} of {len(urls)} package(s))")
+            if sent_n != len(urls):
+                # Return False so the order is NOT marked photo-sent: it stays on
+                # the manifest's photo tab where someone can see it, rather than
+                # looking finished while the customer saw part of the job.
+                print(f"[VialPhoto] only {sent_n}/{len(urls)} photos reached {phone} "
+                      f"— NOT marking the order as photographed")
+                return False
+            return True
         print(f"[VialPhoto] Sent vial photo to {phone}: SID={msg.sid}")
         return True
     except Exception as e:

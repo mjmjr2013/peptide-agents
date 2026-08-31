@@ -507,20 +507,61 @@ def test_several_photos_go_out_as_one_message():
     assert "3 packages" in sent["body"]
 
 
-def test_the_media_template_gets_one_url_not_a_list():
-    """Outside the 24h window the approved media template carries ONE image.
-    Passing the list would serialize a JSON array into a single-value variable
-    and Twilio would reject the whole send."""
-    import agents.messaging_agent as ma, json
+def _template_sends(urls, fail_on=()):
+    """Drive the window-closed path; return the content_variables of each send."""
+    import agents.messaging_agent as ma
     from unittest import mock
-    sent = {}
+    calls = []
+
+    def create(**kw):
+        calls.append(kw)
+        import json as _j
+        if _j.loads(kw["content_variables"])["1"] in fail_on:
+            raise RuntimeError("twilio said no")
+        return mock.MagicMock(sid=f"MM{len(calls)}")
+
     with mock.patch.object(ma, "twilio_client") as tw, \
          mock.patch.object(ma, "_whatsapp_window_open", return_value=False), \
          mock.patch.object(ma.settings, "vial_content_sid", "HXvial"), \
          mock.patch.object(ma.airtable, "log_message"):
-        tw.messages.create.side_effect = lambda **kw: sent.update(kw) or mock.MagicMock(sid="MM1")
-        ma.send_vial_photo_to_customer("whatsapp:+1555", ["a", "b"], "Jane")
-    assert json.loads(sent["content_variables"]) == {"1": "a"}
+        tw.messages.create.side_effect = create
+        ok = ma.send_vial_photo_to_customer("whatsapp:+1555", urls, "Jane")
+    return ok, calls
+
+
+def test_the_media_template_gets_one_url_not_a_list():
+    """A WhatsApp template header holds exactly ONE media item, so each send must
+    carry a single URL. Passing the list would serialize a JSON array into a
+    single-value variable and Twilio would reject the whole send."""
+    import json
+    _ok, calls = _template_sends(["a", "b"])
+    for kw in calls:
+        v = json.loads(kw["content_variables"])["1"]
+        assert isinstance(v, str), f"a non-string went into the media variable: {v!r}"
+
+
+def test_every_package_gets_its_own_template_message():
+    """§30j, Jordan's call: no approval can put N images in one template, so the
+    window-closed path sends one approved template PER package rather than
+    dropping every photo after the first."""
+    import json
+    ok, calls = _template_sends(["a", "b", "c"])
+    assert ok is True
+    assert [json.loads(k["content_variables"])["1"] for k in calls] == ["a", "b", "c"]
+
+
+def test_a_partial_template_delivery_is_not_reported_as_sent():
+    """If some photos fail, the order must NOT be marked photographed — it stays
+    on the manifest where someone can see it, rather than looking finished while
+    the customer only saw part of the job."""
+    ok, calls = _template_sends(["a", "b", "c"], fail_on=("b",))
+    assert len(calls) == 3, "one failed photo must not abandon the remaining ones"
+    assert ok is False, "a partial delivery must not report success"
+
+
+def test_a_single_package_still_sends_exactly_one_template():
+    ok, calls = _template_sends(["only"])
+    assert ok is True and len(calls) == 1
 
 
 def test_a_single_photo_message_is_unchanged():

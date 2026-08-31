@@ -4,7 +4,7 @@ Paste this into a fresh Claude Code session (run from `~/peptide-agents`) to con
 It describes the live WhatsApp sales agent, the new order/payment/fulfillment system,
 how to deploy/debug, and what's outstanding. No secret tokens are stored here.
 
-**Last updated 2026-08-31. Read §30i FIRST — it is the newest (deployed as `f95bc3f`).** §30i restyles the manifest rows
+**Last updated 2026-08-31. Read §30j FIRST — it is the newest.** §30i restyles the manifest rows
 as the workbook table (sticker on the right) and makes the vial photo per PACKAGE, matching the
 per-package tracking. §30h records the §30b–§30g deploy.
 
@@ -1457,10 +1457,8 @@ that message is the final "about to dispatch" signal (§18a) and must not fire o
 the photos go in ONE WhatsApp message — Twilio accepts up to 10 media items — with the body naming
 the package count.
 
-⚠️ **Outside the 24h window only the first photo is sent.** The approved media template
-(`VIAL_CONTENT_SID`) carries exactly ONE image, so a multi-package order whose customer has gone
-quiet gets one photo, and the drop is logged rather than silent. Fixing it needs a new template
-approval; §18a records that as slow. Note the bug this nearly caused: passing the list straight into
+⚠️ **Outside the 24h window only the first photo was sent.** Fixed in §30j — and note that this
+section's claim that it "needs a new template approval" was WRONG. Read §30j before acting on it. Note the bug this nearly caused: passing the list straight into
 `content_variables` would serialize a JSON array into a single-value variable and Twilio would
 reject the whole send — there is a test for it.
 
@@ -1499,3 +1497,40 @@ renders, not what it says after a write fails.
 Code only — no labels to unzip, no price sheets to regenerate (the catalog is untouched).
 `python3 -m pytest tests/ -q` → **940 passed**, then commit, push, force-deploy by SHA and confirm
 the running commit (§10 — auto-deploy has now missed five for five).
+
+## 30j. A WhatsApp template can only ever carry ONE image (2026-08-31)
+
+**§30i was wrong and this is worth remembering:** it said the multi-package vial photo needed "a new
+template approval". No approval can fix it. A WhatsApp template's header holds **exactly one** media
+item — that is the platform's template structure, not a property of our approved template. Twilio
+also locks a template to the media TYPE it was approved with. Verified 2026-08-31 against Twilio's
+`twilio/media` docs and the WhatsApp template component reference.
+
+So a template approval request would have been submitted, waited on (§18a records approvals as slow),
+and come back still unable to do the thing. **Check whether the platform permits it before queuing an
+approval.**
+
+### What we do instead — Jordan's call
+
+Inside the 24h window: unchanged, one message carrying every photo (Twilio caps media at 10).
+Outside it: **one approved template message PER package**, reusing the existing `VIAL_CONTENT_SID`.
+Every parcel gets its own full-resolution picture, which is what §16 needs — the customer's name and
+address must be legible in the photo.
+
+The alternative considered and rejected was stitching the photos into one grid: it would have been a
+single message and a single charge, but each panel shrinks and the address is exactly what stops
+being readable. Cost was not the deciding factor — an order only splits above ~26 kits (75 g/kit
+against the 2 kg cap; bac water is cap-exempt and never splits), so these are large orders and rare.
+
+Two consequences to know:
+- The approved template has ONE variable (the image), so its body cannot say "1 of 3". The photos
+  arrive as N messages with identical wording. Changing that needs a new template — and *that* is a
+  copy change, so it is Jordan's to approve.
+- `send_vial_photo_to_customer` now returns True only if EVERY photo went. A partial delivery
+  returns False, so the order is **not** marked photographed and stays on the manifest's photo tab
+  where someone can see it. A single failing photo no longer abandons the rest — each send is
+  wrapped individually.
+
+**943 passing.** The test that pinned "template gets one URL, not a list" is kept — that bug is still
+live if anyone passes the list into `content_variables` — and joined by tests that every package
+gets its own message, and that a partial delivery is not reported as sent.
