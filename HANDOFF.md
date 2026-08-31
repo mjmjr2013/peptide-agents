@@ -1058,7 +1058,7 @@ Also unresolved: this machine cannot write to the iCloud folder at all — macOS
 access to `~/Library/Mobile Documents/...`, so Jordan's own price-sheet copies are still the old
 build and need regenerating from a terminal that has Full Disk Access.
 
-## 30b. The stale-price-sheet trap, made into a test (2026-08-31) — NOT YET DEPLOYED
+## 30b. The stale-price-sheet trap, made into a test (2026-08-31) — DEPLOYED (see §30h)
 
 §30a caught by hand that the tracked `static/price_list.{xlsx,xls,pdf}` were still on $12 water while
 `core/pricing` said $17. Catching it by hand is not a control — the same mistake is available on
@@ -1109,7 +1109,7 @@ Still open, unchanged: the WhatsApp smoke test through a non-operator handset; D
 cost check (§29); the GitHub PAT in the `origin` remote URL (§29a); and Jordan's own iCloud copies of
 the price sheets, which this machine cannot write to without Full Disk Access (§30a).
 
-## 30c. The labeling manifest Jason's crew works from (2026-08-31) — NOT YET DEPLOYED
+## 30c. The labeling manifest Jason's crew works from (2026-08-31) — DEPLOYED (see §30h)
 
 The daily warehouse email carried a link and nothing else; the weekly workbook squashed each order
 into one cell — `3x Retatrutide 10mg x10; 2x Retatrutide 100mg x10`. A crew reading that has to parse
@@ -1190,7 +1190,7 @@ banner names its order, but the customer address will be on the previous page.
    artwork, so a missing or misnamed sticker fails here rather than reaching the bench.
 4. Commit, push, force-deploy by SHA, confirm the running commit (§10).
 
-## 30d. Dermorphin removed + the CJK guard was checking the wrong thing (2026-08-31) — NOT YET DEPLOYED
+## 30d. Dermorphin removed + the CJK guard was checking the wrong thing (2026-08-31) — DEPLOYED (see §30h)
 
 **Dermorphin is discontinued** (Jordan). All four doses removed from `pricing.CATALOG`, from
 `price_image.CATEGORIES`, and from the frozen baseline. It was not in `coa.html` or the WhatsApp
@@ -1239,7 +1239,7 @@ list Dermorphin, and they can only be rebuilt on the Mac. That is the §30b guar
 4. `python3 -m pytest tests/ -q` → expect **829 passed**.
 5. Commit, push, force-deploy by SHA, confirm the running commit (§10).
 
-## 30e. Sticker coverage is complete — 151 of 151 (2026-08-31) — NOT YET DEPLOYED
+## 30e. Sticker coverage is complete — 151 of 151 (2026-08-31) — DEPLOYED (see §30h)
 
 Jordan supplied the 19 remaining labels (`~/Downloads/individual`) — the §30c gap list minus
 Dermorphin, which §30d removed. **Every SKU we sell now has artwork**, so the manifest's red
@@ -1263,7 +1263,7 @@ on its sticker must equal the strength of the SKU it is filed under.
 **883 passing**, with the same 3 reds from §30d — the committed price sheets still list Dermorphin
 and only the Mac can rebuild them. Step 3 of the deploy clears them.
 
-## 30f. The page IS the manifest now (2026-08-31) — NOT YET DEPLOYED
+## 30f. The page IS the manifest now (2026-08-31) — DEPLOYED (see §30h)
 
 §30c built the labelling sheet as an XLSX attached to the daily email. Jordan's correction:
 
@@ -1336,7 +1336,7 @@ The 3 known reds from §30d remain (Dermorphin still in the committed price shee
 printable workbook — but nothing emails it now. The page carries `@media print` rules so the crew can
 print from the browser instead.
 
-## 30g. Manifest sorted oldest-first, with the wait on every row (2026-08-31) — NOT YET DEPLOYED
+## 30g. Manifest sorted oldest-first, with the wait on every row (2026-08-31) — DEPLOYED (see §30h)
 
 Jordan's concern, and it is a specific one worth recording: a delivery of fresh stock arrives from the
 lab and Jason fulfils **whatever is in front of him**, so an order that has already waited two weeks
@@ -1376,3 +1376,46 @@ than the code being broken. Worth knowing before anyone rebuilds a base from tha
 why payment recording 422s.
 
 **920 passing** (37 in `test_manifest_page.py`), same 3 known Dermorphin reds.
+
+## 30h. §30b–§30g deployed (2026-08-31)
+
+Deployed `67dc866`. Railway force-deploy by SHA (§10); the service had been on
+`f7d4e73`, so auto-deploy missed the push again — that is now five for five, treat
+§10 step 2 as mandatory rather than a fallback.
+
+**Verified against production, not just the deploy status:**
+- running commit `67dc866` == HEAD; `/health` ok
+- `/price-list.xlsx` off production is **byte-identical** to the committed
+  `static/price_list.xlsx` — 151 products, **0** Dermorphin rows, both waters $17
+- `/manifest` returns **403** with no token and with a wrong token
+- `/static/labels/SM5.png` serves 200 image/png, so the artwork deployed with the app
+
+923 tests pass. §30d's "expect 829" was written before §30e–§30g added tests; 923
+is the current figure. If you are reading an older section's expected count, trust
+the newest one.
+
+### Dead code this deploy created — `build_labeling_manifest`
+
+§30f removed the workbook attachment from the daily email, which was
+`build_labeling_manifest`'s only production caller. The function (≈200 lines in
+`core/manifest.py`) and the 18 tests in `test_manifest.py` that exercise it now
+prove the correctness of something nothing reaches. It was left in deliberately
+rather than deleted during a deploy — but do not read those 18 green tests as
+evidence the crew's sheet works, because the crew no longer gets a sheet. The page
+is the manifest (§30f). Delete or revive it as a separate change.
+
+### The placeholder file, resolved
+
+`agents/messaging_placeholder_ignore.py` (the §30c step-1 stray) is gone. It was
+NOT identical to `agents/weekly_report.py` — it was the older draft that still
+built and mailed the workbook, superseded by §30f's decision. Checked before
+deleting; the tracked file carried the newer behaviour.
+
+### Still open, unchanged
+
+The WhatsApp smoke test through a non-operator handset; Daniel's Sermorelin cost
+check (§29); the **GitHub PAT still embedded in the `origin` remote URL** (§29a),
+still unrotated; and Jordan's iCloud reference copies of the price sheets, which
+this machine cannot write (macOS denies the process access to
+`~/Library/Mobile Documents/…` — see §30a). `regenerate_price_sheets.sh` writes to
+`static/` on purpose and does not touch them.
