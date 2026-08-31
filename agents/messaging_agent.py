@@ -20,6 +20,7 @@ from core.pricing import (
     max_discount_for_qty, HANDOFF_KITS, MARKUP_START, MARKUP_FLOOR,
 )
 from core.price_image import get_sku
+from core.shipping import shipping_quote, order_shipping_profile
 from core.proof_media import get_media_catalog_text
 from core import crypto_verify
 from config import settings
@@ -505,12 +506,17 @@ def _validate_line_items(line_items: list[dict]) -> tuple[list[dict], bool, list
     return items, clamped, unpriced
 
 
-def _shipping_fee(shipping: str, product_subtotal: float) -> int:
-    if shipping == "expedited":
-        return 235
-    if product_subtotal > 1000:  # free standard over $1000
-        return 0
-    return 95
+def _shipping_fee(shipping: str, product_subtotal: float,
+                  items: list[dict] | None = None) -> int:
+    """The shipping charge the customer sees.
+
+    Delegates to core.shipping so there is ONE implementation of the rule, now
+    that the consolidated catalog knows what a kit weighs. Behavior is
+    unchanged: the weight guard is off (shipping.FREE_SHIPPING_MAX_KG is None)
+    until Jordan sets a threshold, because this number is quoted to real buyers.
+    Passing `items` costs nothing today and is what the guard will read.
+    """
+    return shipping_quote(shipping, product_subtotal, items)
 
 
 # Cost guardrail: the whole history is re-sent to Claude on every reply, so an
@@ -1661,7 +1667,24 @@ def _handle_ordering(phone: str, conversation: list[dict], existing_lead: dict |
         if coin not in ("USDT", "BTC"):
             return "Almost there, dear! We accept both BTC and USDT — which would you prefer to use?"
         subtotal = sum(i["line_total"] for i in items)
-        total_usd = round(subtotal + _shipping_fee(shipping, subtotal), 2)
+        total_usd = round(subtotal + _shipping_fee(shipping, subtotal, items), 2)
+
+        # Internal-only freight visibility. The customer's quote above is
+        # untouched; this is so a money-losing order is VISIBLE at the moment it
+        # is taken rather than discovered on a courier invoice weeks later. Never
+        # let it break an order — it is telemetry, not a guard.
+        try:
+            prof = order_shipping_profile(items, shipping, subtotal)
+            print(f"[Shipping] {phone} {prof['product_kg']}kg in {prof['packages']} pkg(s), "
+                  f"charged ${prof['charged_usd']}, ${prof['value_per_kg']}/kg")
+            if prof["packages"] >= 4 and prof["charged_usd"] == 0:
+                _notify_operators(
+                    f"[FREIGHT · free shipping on a heavy order] {phone} "
+                    f"${subtotal:.0f} subtotal, {prof['product_kg']}kg, "
+                    f"{prof['packages']} packages, ${prof['value_per_kg']}/kg. "
+                    f"Shipping charged: $0.")
+        except Exception as e:
+            print(f"[Shipping] profile failed (non-fatal): {e!r}")
 
         if not lead_id:
             try:

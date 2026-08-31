@@ -39,7 +39,7 @@ _ALIAS_GROUPS: list[tuple[str, list[str]]] = [
     ("BPC+GHK-Cu+TB Blend", [
         "BPC+TB+GHK Blend",          # price sheet (GLOW70)
         "BPC+TB+GHK-Cu Blend",
-        "GLOW 70", "GLOW70",         # COA page / customer shorthand
+        "GLOW 70", "GLOW70", "Glow", # COA page / customer shorthand
     ]),
     ("BPC+TB+GHK-Cu+KPV Blend", [
         "BPC+TB+GHK+KPV",            # price sheet (KLOW)
@@ -58,6 +58,32 @@ _ALIAS_GROUPS: list[tuple[str, list[str]]] = [
     ("MIC (Lipo-C+B12)", [
         "MIC (Lipo+B12)",            # price sheet (MIC10)
         "MIC Lipo+B12", "MIC",
+    ]),
+    # ── Names customers actually type (2026-08-31) ───────────────────────────
+    # These were documented in Lily's prompt but were not in this table, so a
+    # buyer asking for "MT2" or "Wolverine" produced an unresolvable line. Since
+    # HANDOFF §29 that fails CLOSED — no free kits — but it stalls the order and
+    # pings an operator, which is exactly the manual babysitting this system is
+    # meant to remove. Two of them (Wolverine, MT2) are also the spellings
+    # website/coa.html uses, so this closes the third-copy drift as well.
+    ("BPC+TB Blend", [
+        "BPC-157 + TB-500 (Wolverine)",   # coa.html
+        "BPC-157 + TB-500", "BPC+TB", "BPC/TB Blend",
+        "Wolverine",                      # customer shorthand
+    ]),
+    ("Melanotan II", [
+        "Melanotan II (MT2)",             # coa.html
+        "Melanotan 2", "Melanotan-2", "Melanotan",
+        "MT2", "MT-2", "MTII",            # customer shorthand
+    ]),
+    ("Bacteriostatic Water", [
+        "Bac Water", "Bact Water", "Bacteriostatic", "BAC-Water", "Bacto Water",
+    ]),
+    ("Sterile Water", [
+        "Sterile H2O", "SWFI",
+    ]),
+    ("5-Amino/MQ", [
+        "5-Amino 1MQ", "5-Amino-1MQ", "5 Amino 1MQ", "5A1MQ", "5-Amino1MQ",
     ]),
     # Sermorelin acetate IS sermorelin — acetate is just the salt form it ships
     # as. The separate "Sermorelin Acetate" cost rows were a stale second quote

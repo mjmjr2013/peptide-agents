@@ -156,13 +156,28 @@ CATALOG: list[dict] = [
     {"product": "Admax", "spec": "10mg x10", "cost": 44.14},
     {"product": "ACTH", "spec": "5mg x10", "cost": 30.34},
     {"product": "SLU-PP-322", "spec": "5mg x10", "cost": 35.86},
-    {"product": "EPO", "spec": "3000IU", "cost": 24.83},
+    # 'x10' added 2026-08-31 (Jordan confirmed EPO ships as a ten-vial kit like
+    # everything else). It was the ONLY row without the suffix — the same shape
+    # as the DSIP bug in §29, where a non-standard spec broke prefix matching.
+    # It priced correctly only because EPO has a single row and fell through to
+    # the single-candidate branch of find_item(); a second EPO dose would have
+    # made it unpriceable. No price moves: $149 either way.
+    {"product": "EPO", "spec": "3000IU x10", "cost": 24.83},
     {"product": "Dermorphin", "spec": "2mg x10", "cost": 11.86},
     {"product": "Dermorphin", "spec": "5mg x10", "cost": 20.69},
     {"product": "Dermorphin", "spec": "10mg x10", "cost": 33.10},
     {"product": "Dermorphin", "spec": "20mg x10", "cost": 55.17},
-    {"product": "Bacteriostatic Water", "spec": "10ml x10", "cost": 2.00, "list_override": 12.00},
-    {"product": "Sterile Water", "spec": "10ml x10", "cost": 2.00, "list_override": 12.00},
+    # $12 -> $17 on 2026-08-31, Jordan's call. This is a FREIGHT price, not a
+    # margin change: a bac water kit is 270 g against 75 g for a lyophilized one
+    # and sells for $17, so bulk water was buying free shipping ($1,000 of it is
+    # ~22.7 kg) at roughly $44 of value per kilo. Rather than deny free shipping
+    # by weight, the carriage is priced into the product. See core/shipping.py.
+    {"product": "Bacteriostatic Water", "spec": "10ml x10", "cost": 2.00, "list_override": 17.00},
+    # Matched to bac water at $17 the same day, for the same reason. These two
+    # are the same 270 g of water at the same $2 cost and sit on adjacent lines
+    # of the price sheet, so any gap between them is just an invitation to buy
+    # the cheaper one — the freight has to be priced into both or into neither.
+    {"product": "Sterile Water", "spec": "10ml x10", "cost": 2.00, "list_override": 17.00},
 ]
 
 MARKUP_START = 6.0   # open at 6x cost
@@ -448,8 +463,8 @@ All prices per kit (10 vials) • USD
   10mg → $819.30
 
 *━━ Reconstitution Supplies ━━*
-*Bacteriostatic Water* 10ml → $12.00
-*Sterile Water*        10ml → $12.00
+*Bacteriostatic Water* 10ml → $17.00
+*Sterile Water*        10ml → $17.00
 
 Reply with a product name for a specific quote, or to place an order. 🧬"""
 ]

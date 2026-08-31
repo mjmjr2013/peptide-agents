@@ -96,8 +96,8 @@ CATEGORIES = [
         ("NP8100", "Snap-8",                "100mg",    "$663"),
         ("LC216",  "Lipo-C",                "10ml",     "$92"),
         ("MIC10",  "MIC (Lipo+B12)",        "10ml",     "$298"),
-        ("BAC10",  "Bacteriostatic Water",  "10ml",     "$12"),
-        ("STW10",  "Sterile Water",         "10ml",     "$12"),
+        ("BAC10",  "Bacteriostatic Water",  "10ml",     "$17"),
+        ("STW10",  "Sterile Water",         "10ml",     "$17"),
     ]),
     ("GH / Growth", [
         ("IP2",    "Ipamorelin",            "2mg",      "$47"),

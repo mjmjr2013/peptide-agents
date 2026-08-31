@@ -68,6 +68,13 @@ and tell him the one line to paste.
 Message copy, templates, pricing, and the WhatsApp profile are all seen by real buyers. Confirm with
 Jordan before changing any of them, even when the change looks obviously correct.
 
+**Prices are pinned.** `tests/test_price_baseline.py` holds a hardcoded snapshot of all 155 list
+prices plus a log of every deliberate move. Changing a price means editing the price sheet, the
+baseline and `INTENTIONAL_CHANGES` in one commit. Never regenerate that baseline to turn a red test
+green — it exists precisely because the older suite compared the price sheet against itself and so
+could not catch an edit (HANDOFF §30). Changing a price also means regenerating the price-list
+image/XLSX/PDF, or the customer is still sent the old number.
+
 ## Secrets
 
 No tokens live in this repo. `.env` is gitignored. Railway tokens are generated per session and
@@ -78,6 +85,11 @@ No tokens live in this repo. `.env` is gitignored. Railway tokens are generated 
 - `agents/` — messaging (the sales agent), payment watcher, weekly/daily reports, health monitor,
   transcript reviewer
 - `core/` — Airtable client, crypto verification, pricing, deals, white-label, factory
+  - `catalog.py` — **the SKU-keyed view of every product** (cost, price, form, weight, label). It
+    JOINS `pricing.CATALOG` and `price_image.CATEGORIES` rather than copying them; `audit()` fails
+    the build if they drift. Start here for any product fact.
+  - `shipping.py` — kit weights → package splits (2 kg gross cap, balanced) and the customer's
+    shipping charge. Bac water is exempt from the cap; see HANDOFF §30.
 - `config/settings.py` — every env var, each with a comment explaining why it exists
 - `website/` — northlinesupplies.com source (⚠️ hosted on a SECOND Cloudflare account)
 - `main.py` — Flask app, routes, and the in-process scheduler loop

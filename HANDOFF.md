@@ -4,7 +4,12 @@ Paste this into a fresh Claude Code session (run from `~/peptide-agents`) to con
 It describes the live WhatsApp sales agent, the new order/payment/fulfillment system,
 how to deploy/debug, and what's outstanding. No secret tokens are stored here.
 
-**Last updated 2026-08-30. Read §29 FIRST — it is the newest.** §29 fixes a silent revenue leak of a
+**Last updated 2026-08-31. Read §30 FIRST — it is the newest.** §30 consolidates the catalog
+into one SKU-keyed source of truth with real weights, closes the bac-water shipping hole by pricing
+freight into the product ($12 → $17, both waters) rather than by a weight rule, and fixes a hole in
+the §29 test suite itself: it could not have caught a price being edited. NOT YET DEPLOYED.
+
+Before that, §29 FIRST for the pricing guard — §29 fixes a silent revenue leak of a
 different kind from §28: catalog name drift left five SKUs unpriceable, and an unpriceable line
 skipped the ENTIRE price guard — a missing unit_price shipped the kits free. Fixed by failing closed
 plus an alias layer; proven price-neutral by `tests/test_catalog_regression.py`.
@@ -863,3 +868,133 @@ floor; `website/coa.html` still holds a third hardcoded catalog; colloquial name
 ⚠️ **The `origin` remote URL has a GitHub personal access token embedded in it** (`git remote -v`
 prints it in the clear, and so does any tool output that includes it). Nothing here changed that, but
 it should be rotated and moved to a credential helper.
+
+## 30. Consolidated catalog + weight-aware shipping (2026-08-31) — NOT YET DEPLOYED
+
+Step two of the consolidation §29 started. §29 stopped unpriceable lines from shipping free; this
+section gives the catalog a single SKU-keyed identity and, for the first time, a **weight**.
+
+### `core/catalog.py` — one SKU-keyed view, JOINED not re-typed
+
+Product facts lived in three files that each knew part of the truth: `pricing.CATALOG` (cost + the
+names in Lily's prompt), `price_image.CATEGORIES` (SKU, category, the price the customer sees) and
+`website/coa.html` (a third hardcoded copy). Nothing tied a SKU to its cost and nothing anywhere
+knew what a kit weighs.
+
+**It is deliberately a JOIN, not a fourth copy.** Re-typing 155 rows of live money data is the
+riskiest edit available on this system. The catalog is built at import time from the two existing
+sources and the join is asserted TOTAL, so those files stay authoritative for what they already
+drive (the price-list image/XLSX/PDF, and the prompt text) and **drift between them is now a test
+failure rather than an unpriceable order line** — the §29 root cause, closed structurally.
+
+The join was already clean after §29: **155 cost rows ↔ 155 sheet rows, 1:1, no orphans.**
+
+Each `Item` carries sku, product/spec (both spellings), category, unit, dose, vials, form, cost,
+list price, floor price, `unit_weight_g` and `label_file`. `catalog.audit()` returns every way the
+sources can disagree; the suite asserts it is empty.
+
+### Weights (Jordan's measurements, 2026-08-31)
+
+| what | grams |
+|---|---|
+| lyophilized kit | 75 |
+| liquid kit (10 mL × 10) | 270 |
+| NAD and Glutathione, every dose | 170 |
+| **empty shipping box** | **350** |
+
+Resolution order is SKU override → product override → form default, so a new dose of NAD needs no
+edit and a new liquid product is classed automatically. **`liquid` is a CLASS derived from the spec's
+unit of measure** — `BAC10` is not special-cased anywhere, exactly as §29 asked. It catches
+`BAC10`, `STW10`, `LC216`, `MIC10` and anything liquid added later.
+
+The 350 g box is per PACKAGE, not per kit, so it comes out of the cap: **1,650 g of payload** inside
+a 2 kg gross limit.
+
+### The bac water hole — closed by PRICING, not by a weight rule
+
+The exposure was real: at exactly $1,000, **144 of the 155 SKUs fit in one box; bac and sterile
+water need fourteen** (22.7 kg at ~$44 of value per kilo, against ~$11,920/kg for RT100).
+
+Jordan's call was **not** to deny free shipping to heavy orders but to **price the carriage into the
+product: bac water AND sterile water $12 → $17/kit.** Buyers keep the simple flat quote, and the
+freight is paid at the till. Both moved together on purpose — they are the same 270 g of water at the
+same $2 cost on adjacent lines of the price sheet, so any gap between them would just have moved bulk
+buyers one row down. `shipping_quote()` is therefore byte-identical to the old `_shipping_fee()` — there is no
+weight term in anything a customer sees, and a test asserts no one reintroduces one.
+
+### Package splitting (`core/shipping.py`)
+
+2 kg **gross** cap, balanced not greedy, via longest-processing-time bin packing: the 3 kg example
+in §29 comes out **1500 g / 1500 g**, never 2.0 + 1.0. Package count falls out of the weights — no
+kit count is hardcoded anywhere.
+
+**The water exemption.** The 2 kg cap is about SEIZURE RISK, not carrier limits, and a box of
+nothing but water has none (Jordan). So `catalog.UNRESTRICTED_SKUS = {"BAC10", "STW10"}` ships whole:
+**84 kits is ONE box, not fourteen.** Sterile water is the same thing without the benzyl alcohol, so
+it qualifies on the same reasoning; it was added alongside bac water because pricing the freight in
+only works if both actually ship the cheap way.
+
+The exemption is narrow and listed by SKU on purpose — it is **not "liquids"** (`LC216` and `MIC10`
+are liquid, 270 g, and deliberately still capped) and not "cheap things". It is the specific products
+whose contents are uninteresting at a border. A test asserts exactly which SKUs are in it, so
+widening it is a decision someone has to make on purpose.
+
+Both arrangements are built and the one with **fewer packages wins**, so a single bac water kit
+rides along inside a capped peptide box rather than costing a second parcel, while bulk water
+separates. A test asserts a restricted SKU can never end up in an uncapped box. Uncapped is not
+unlimited: a package over 30 kg is FLAGGED (`over_courier_limit`), not silently split, because
+splitting would contradict the rule.
+
+### Other fixes in this pass
+
+- **Colloquial names are in the alias table at last** — `MT2`, `Melanotan 2`, `Wolverine`,
+  `Glow`, `Bac Water`, `5-Amino 1MQ`, `SWFI` and more. These failed CLOSED since §29 (no free kits),
+  but every one stalled an order and pinged an operator — the exact babysitting this system exists to
+  remove. **This also closes the `website/coa.html` third-copy drift**: all 25 of its rows now
+  resolve to their own SKU, and a test parses that file and proves it.
+- **EPO spec `3000IU` → `3000IU x10`.** It was the only row in the catalog without the suffix — the
+  same shape as the DSIP bug in §29 — and priced correctly only because EPO has a single row and
+  fell through `find_item`'s single-candidate branch. A second EPO dose would have made it
+  unpriceable. Jordan confirmed it ships as a ten-vial kit. **No price moved.**
+  - Cosmetic, not fixed: its SKU on the sheet is **`EP0` with a digit zero**, not the letter O.
+    That string goes to the supplier on the weekly bulk order.
+- **Internal freight telemetry.** Every placed order logs kg, package count and $/kg, and an
+  operator is emailed when free shipping goes out on **4+ packages** — so the next cheap-and-heavy
+  product is caught on its first order, not on a courier invoice. Wrapped so it can never break an
+  order.
+
+### ⚠️ The regression suite could not catch a price edit — fixed
+
+`test_no_price_moved` compares `get_list_price()` against `price_image.CATEGORIES` — **the price
+sheet itself**. That correctly catches the two sources drifting apart (the §29 bug) but it cannot
+catch a price being *edited*, because editing the sheet moves the thing it compares against. Its own
+docstring claimed a `BASELINE_LIST_PRICES` "captured BEFORE any change"; **no such constant ever
+existed.** The suite written to stop a revenue leak would have sat green through a fat-fingered zero
+on the customer price list.
+
+`tests/test_price_baseline.py` is now that snapshot: all **155 prices hardcoded** at commit
+`1aa2007f`, plus an `INTENTIONAL_CHANGES` log recording who decided each move and why. Verified it
+bites — `$894 → $850` on RT100 (still far above its floor, so every other test stays green) fails
+only this one. **Changing a price now means editing the sheet, the baseline and the log in one diff
+a human reads.** Do not regenerate it wholesale to turn a red test green.
+
+### Verification — 397 assertions, all passing
+
+- **Exactly two prices moved**, and they are the intended ones. Every sheet SKU was priced under the
+  pre-change code (from `git show HEAD:`) and again after, and diffed: `BAC10 12.0 → 17.0` and
+  `STW10 12.0 → 17.0`, nothing else, no SKU added, removed, or newly unpriceable.
+- The live `_shipping_fee` was lifted out of `agents/messaging_agent.py` with `ast` (the §29
+  technique) and compared to the old rule across every boundary — **identical everywhere**.
+- Anything that PRICES also WEIGHS, over ~900 spellings. If a line could price but not weigh it
+  would pass the §29 guard and reach shipping at an unknown weight — the same hole one layer down.
+- Splits stay under the cap and balanced across order sizes from 1 to 250 kits.
+
+### To deploy (Claude Code on the Mac — Cowork cannot run git or Railway)
+
+1. `python3 -m pytest tests/ -q` → expect **402 passed**. (`pytest` is user-site only, see §29a.)
+2. Regenerate the customer price list, or both waters still show $12 on the image/XLSX/PDF the
+   customer is sent: `python3 -c "from core.price_image import generate_price_list_image as g; g('en'); g('cn')"`.
+3. Commit, push, **force-deploy by SHA (§10) and confirm the RUNNING commit**, not just SUCCESS.
+4. Still open, unchanged: the WhatsApp smoke test through a non-operator handset; Daniel's lab check
+   on the Sermorelin cost (§29); and the **GitHub PAT embedded in the `origin` remote URL** (§29a) —
+   still unrotated.
