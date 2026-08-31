@@ -4,7 +4,7 @@ Paste this into a fresh Claude Code session (run from `~/peptide-agents`) to con
 It describes the live WhatsApp sales agent, the new order/payment/fulfillment system,
 how to deploy/debug, and what's outstanding. No secret tokens are stored here.
 
-**Last updated 2026-08-31. Read §30i FIRST — it is the newest.** §30i restyles the manifest rows
+**Last updated 2026-08-31. Read §30i FIRST — it is the newest (deployed as `f95bc3f`).** §30i restyles the manifest rows
 as the workbook table (sticker on the right) and makes the vial photo per PACKAGE, matching the
 per-package tracking. §30h records the §30b–§30g deploy.
 
@@ -1424,7 +1424,7 @@ this machine cannot write (macOS denies the process access to
 `~/Library/Mobile Documents/…` — see §30a). `regenerate_price_sheets.sh` writes to
 `static/` on purpose and does not touch them.
 
-## 30i. Sheet-style rows + a vial photo per package (2026-08-31) — NOT YET DEPLOYED
+## 30i. Sheet-style rows + a vial photo per package (2026-08-31) — DEPLOYED f95bc3f
 
 Two revisions from Jordan after seeing §30f live.
 
