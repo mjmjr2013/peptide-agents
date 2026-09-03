@@ -4,7 +4,10 @@ Paste this into a fresh Claude Code session (run from `~/peptide-agents`) to con
 It describes the live WhatsApp sales agent, the new order/payment/fulfillment system,
 how to deploy/debug, and what's outstanding. No secret tokens are stored here.
 
-**Last updated 2026-08-31. Read §30k FIRST — it is the newest.** §30i restyles the manifest rows
+**Last updated 2026-09-03. Read §31a FIRST — it is the newest.** §31a records the §31 deploy
+(commit `614dd64`) and the one test that had to be fixed to get there. §31 is the change itself.
+
+**§30k and below are history.** §30i restyles the manifest rows
 as the workbook table (sticker on the right) and makes the vial photo per PACKAGE, matching the
 per-package tracking. §30h records the §30b–§30g deploy.
 
@@ -1615,7 +1618,7 @@ Landon sequence, and pins that recovery finds a nameless order but ignores a shi
 Airtable. Backfilling "Landon Anderson" from the transcript is a one-line write; left undone
 deliberately, since editing a shipped order's record is Jordan's call.
 
-## 31. Negotiation removed; fixed prices by warehouse and order size (2026-09-03) — BUILT IN COWORK, NOT YET DEPLOYED
+## 31. Negotiation removed; fixed prices by warehouse and order size (2026-09-03) — DEPLOYED, see §31a
 
 Jordan, 2026-09-03: **stop negotiating.** Every price now comes off a sheet Daniel publishes,
 chosen by two facts — which warehouse, and how many kits in total. There is no discount
@@ -1780,3 +1783,50 @@ the committed sheets still carry the old prices.** They go green at step 2 below
 - The group volume discounts in his notes (10% at 5,000 kits/month rising to 50% at 100,000) are
   **not implemented** — that is a standing monthly-commitment deal, not an order-size tier, and
   Lily has no way to know a buyer's monthly volume. Left for a human.
+
+## 31a. §31 deployed (2026-09-03) — commit `614dd64`
+
+Ran `deploy_pricing.sh`. Both of the steps it could not script are now also done, so §31 is fully
+live and nothing about it is outstanding.
+
+- **Deployed `614dd64`** — force-deployed by SHA per §10, polled to SUCCESS with a matching
+  `meta.commitHash`, `/health` returns ok. The new US sheet is being served:
+  `/Northline_US_Warehouse_Price_List.xlsx` returns 200 at exactly the 6,107 bytes committed.
+- **Airtable `warehouse` field created** on Orders (`fldI4OcZao18Ho0Ss`, single line text), via the
+  metadata API. `_warehouse_field_ok` therefore never trips and orders start recording their
+  warehouse with no code change, exactly as §31 designed. Note it is a DIFFERENT thing from the
+  existing `legacy_warehouse` checkbox, which is the pre-Jason-handoff flag from 2026-08-19 and is
+  unrelated — checked before adding, so the base does not now carry two columns meaning one thing.
+- Sheets rebuilt into `static/` with `RAILWAY_ENVIRONMENT=1` before the tests ran, so the §30a
+  stale-sheet trap is closed for this change: fingerprint `f8cc5b74e16963bd`. `PingFang HK` is not
+  installed on this Mac and matplotlib says so ~600 times; the §30d font guard passes anyway
+  because the renderer falls back to a CJK face that is present. Noise, not tofu.
+
+### The one red test, and why it was the test that was wrong
+
+The suite stopped the script on its first run — `set -e` did its job and nothing was committed.
+Three reds, all `test_every_sticker_file_is_named_for_a_real_sku[RT80|TR80|STW10]`: the three SKUs
+§31 paused pending lab confirmation, whose artwork §31 deliberately KEEPS.
+
+`RETIRED_LABEL_SKUS` was wired into `catalog.labels_orphaned()` and into the strength test, but
+`tests/test_labels.py` re-implements the same orphan check a second time, parametrized over files
+instead of SKUs, and that copy never consulted the exemption. So the test demanded we delete exactly
+the files the §31 decision says to keep. Fixed by honouring `RETIRED_LABEL_SKUS` there too — the
+same skip the strength test already had.
+
+Worth noticing that this is the second time a duplicated check has drifted from its source (§29/§30b
+was prices; this is artwork). The lesson §31 applied to prices — make the second copy LOOK UP the
+first rather than restate it — has not been applied to the label checks. Left alone for now because
+the assertion is cheap and correct, but if a third exemption ever appears, `labels_orphaned()`
+should become the only implementation.
+
+**Not verified by me:** the WhatsApp round trip. Send yourself "prices" and confirm you get the China
+sheet with the new numbers, and that asking for US stock switches it — that is the one thing on this
+change no test covers.
+
+### Still open
+
+Unchanged from §31's list: `LIR30`'s 20mg/30mg conflict, `SLU-PP-332` vs `-322`, artwork for `SM60`,
+`SM100`, `TR120`, whether `RT80`/`TR80`/sterile water come back, and Daniel's monthly-commitment
+volume discounts (deliberately not implemented).
+
