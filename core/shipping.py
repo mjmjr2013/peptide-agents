@@ -23,8 +23,9 @@ TWO THINGS LIVE HERE and they are deliberately separate:
      a 3 kg order becomes two ~1.5 kg boxes, not 2.0 + 1.0. Used by the
      warehouse manifest and, later, the labeling manifest.
 
-  2. `shipping_quote()` — WHAT THE CUSTOMER PAYS. Deliberately UNCHANGED: still
-     $95 standard, free over $1,000, $235 expedited, decided on dollars.
+  2. `shipping_quote()` — WHAT THE CUSTOMER PAYS. China is unchanged: $95
+     standard, free over $1,000, $235 expedited, decided on dollars. The US
+     warehouse added on 2026-09-03 is a flat $30 with no threshold at all.
 
 HOW THE BAC WATER HOLE WAS ACTUALLY CLOSED (Jordan, 2026-08-31). Not by denying
 free shipping to heavy orders — by pricing the carriage into the product. Bac
@@ -41,7 +42,7 @@ noticed on the first order rather than on a courier invoice.
 """
 import math
 
-from core import catalog
+from core import catalog, pricing
 
 # ── The physical cap ─────────────────────────────────────────────────────────
 # Self-imposed, not a carrier limit: 2 kg keeps every package in a class that
@@ -221,23 +222,37 @@ def _split_capped(kits: list[tuple]) -> list[list[tuple]]:
 
 
 # ── What the customer pays ───────────────────────────────────────────────────
-# Unchanged behavior by default. These are the live numbers from
-# agents/messaging_agent._shipping_fee().
+# China: the live numbers, unchanged. Daniel's 2026-09-03 note quotes the same
+# $95 / free-over-$1,000, so nothing moved on that side.
+#
+# US warehouse (new, 2026-09-03): $30 flat and that is the whole rule. It is an
+# overnight domestic label on stock already in the country, so there is no
+# expedited tier to sell and NO free-shipping threshold — still $30 on a $5,000
+# order. Do not "fix" that by copying FREE_OVER_USD across: the China threshold
+# buys a four-week consolidated freight lane, and a domestic overnight label
+# costs what it costs whatever is in the box.
 STANDARD_USD = 95
 EXPEDITED_USD = 235
 FREE_OVER_USD = 1000
 
+US_FLAT_USD = 30
+
 
 def shipping_quote(shipping: str, product_subtotal: float,
-                   items: list[dict] | None = None) -> int:
+                   items: list[dict] | None = None,
+                   warehouse: str = pricing.DEFAULT_WAREHOUSE) -> int:
     """The shipping charge shown to the customer, in whole dollars.
 
-    Byte-identical in behavior to the `_shipping_fee()` this replaced. There is
-    deliberately NO weight term: heavy freight is priced into the product (see
-    the module docstring), not charged at checkout, so a buyer's quote never
-    depends on something they cannot see. `items` is accepted so the signature
-    is ready for a rule that needs it, and ignored today.
+    There is deliberately NO weight term: heavy freight is priced into the
+    product (see the module docstring), not charged at checkout, so a buyer's
+    quote never depends on something they cannot see. `items` is accepted so the
+    signature is ready for a rule that needs it, and ignored today.
+
+    `warehouse` defaults to China, so every caller that predates the US
+    warehouse keeps exactly the behavior it had.
     """
+    if warehouse == pricing.WAREHOUSE_US:
+        return US_FLAT_USD
     if shipping == "expedited":
         return EXPEDITED_USD
     if product_subtotal > FREE_OVER_USD:
@@ -246,7 +261,8 @@ def shipping_quote(shipping: str, product_subtotal: float,
 
 
 def order_shipping_profile(items: list[dict], shipping: str,
-                           product_subtotal: float) -> dict:
+                           product_subtotal: float,
+                           warehouse: str = pricing.DEFAULT_WAREHOUSE) -> dict:
     """Everything internal about an order's shipping, for reports and alerts.
 
     Internal-only by design: customers keep seeing the flat quote. This is what
@@ -261,7 +277,8 @@ def order_shipping_profile(items: list[dict], shipping: str,
         "product_kg": round(kg, 3),
         "packages": len(packages),
         "gross_grams": round(sum(p["gross_g"] for p in packages), 1),
-        "charged_usd": shipping_quote(shipping, product_subtotal, items),
+        "charged_usd": shipping_quote(shipping, product_subtotal, items, warehouse),
+        "warehouse": warehouse,
         "value_per_kg": round(product_subtotal / kg, 2) if kg else None,
         "unweighed_lines": unweighed,
         "package_detail": packages,

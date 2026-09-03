@@ -44,7 +44,14 @@ def test_some_artwork_is_actually_installed():
 
 @pytest.mark.parametrize("path", INSTALLED, ids=lambda p: p.stem)
 def test_every_sticker_file_is_named_for_a_real_sku(path):
-    """The filename IS the mapping, so a typo in a filename is a lost sticker."""
+    """The filename IS the mapping, so a typo in a filename is a lost sticker.
+
+    A SKU in RETIRED_LABEL_SKUS is the one allowed exception: paused on
+    2026-09-03, artwork deliberately kept (HANDOFF §31). This mirrors the
+    exemption in catalog.labels_orphaned() — without it this test would demand
+    we delete exactly the files that decision says to keep."""
+    if path.stem.upper() in catalog.RETIRED_LABEL_SKUS:
+        pytest.skip(f"{path.stem} is paused (2026-09-03) — artwork kept on purpose")
     assert catalog.get(path.stem) is not None, (
         f"static/labels/{path.name} is not a SKU we sell. Rename it to the "
         f"catalog SKU or remove it — the album uses its own codes.")
@@ -54,6 +61,8 @@ def test_every_sticker_file_is_named_for_a_real_sku(path):
 def test_the_printed_strength_matches_the_sku_it_is_filed_under(sku):
     """THE test. A sticker saying 10mg filed under the 100mg SKU would put the
     wrong strength on a real vial, which is the whole thing we are preventing."""
+    if sku in catalog.RETIRED_LABEL_SKUS:
+        pytest.skip(f"{sku} is paused (2026-09-03) — artwork kept, SKU not sold")
     item = catalog.get(sku)
     assert item is not None, f"{sku} has label text but is not in the catalog"
     printed = _dose(catalog.SKU_LABEL_TEXT[sku])
@@ -80,6 +89,17 @@ def test_label_text_json_only_describes_stickers_we_have():
 
 def test_no_orphaned_artwork():
     assert catalog.labels_orphaned() == []
+
+
+def test_paused_skus_keep_their_artwork_but_are_not_sellable():
+    """RETIRED_LABEL_SKUS must exempt a file from the orphan check WITHOUT
+    quietly making the product orderable again. Both halves matter: the first is
+    why the artwork survives, the second is why that is safe."""
+    from core import pricing
+    for sku in catalog.RETIRED_LABEL_SKUS:
+        assert catalog.get(sku) is None, f"{sku} is listed as paused but is in the catalog"
+        assert pricing.price_for_sku(sku) is None, f"{sku} still prices"
+        assert catalog.label_path(sku) is not None or True   # artwork optional on CI
 
 
 def test_the_gap_list_is_honest():

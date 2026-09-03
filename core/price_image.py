@@ -16,12 +16,14 @@ if _os.environ.get("RAILWAY_ENVIRONMENT") or not (_ICLOUD.parent.exists()):
     XLSX_PATH      = _STATIC / "price_list.xlsx"
     XLS_PATH       = _STATIC / "price_list.xls"
     PDF_PATH       = _STATIC / "price_list.pdf"
+    US_XLSX_PATH   = _STATIC / "price_list_us.xlsx"
 else:
     OUTPUT_PATH    = _ICLOUD / "price_list.png"
     CN_OUTPUT_PATH = _ICLOUD / "price_list_cn.png"
     XLSX_PATH      = _ICLOUD / "price_list.xlsx"
     XLS_PATH       = _ICLOUD / "price_list.xls"
     PDF_PATH       = _ICLOUD / "price_list.pdf"
+    US_XLSX_PATH   = _ICLOUD / "price_list_us.xlsx"
 
 # The stamp deliberately follows the SAME branch as the artifacts above. That is
 # what makes the iCloud mistake detectable: regenerate on the Mac without
@@ -30,167 +32,192 @@ else:
 # See regenerate_all() and HANDOFF §30a/§30b.
 STAMP_PATH = XLSX_PATH.parent / "price_list.stamp.json"
 
-CATEGORIES = [
+_LAYOUT = [
     ("GLP-1 Peptides", [
-        ("SM5",    "Semaglutide",           "5mg",      "$58"),
-        ("SM10",   "Semaglutide",           "10mg",     "$92"),
-        ("SM15",   "Semaglutide",           "15mg",     "$133"),
-        ("SM20",   "Semaglutide",           "20mg",     "$166"),
-        ("SM30",   "Semaglutide",           "30mg",     "$216"),
-        ("SM40",   "Semaglutide",           "40mg",     "$288"),
-        ("SM50",   "Semaglutide",           "50mg",     "$360"),
-        ("TR5",    "Tirzepatide",           "5mg",      "$71"),
-        ("TR10",   "Tirzepatide",           "10mg",     "$108"),
-        ("TR15",   "Tirzepatide",           "15mg",     "$162"),
-        ("TR20",   "Tirzepatide",           "20mg",     "$216"),
-        ("TR30",   "Tirzepatide",           "30mg",     "$274"),
-        ("TR40",   "Tirzepatide",           "40mg",     "$365"),
-        ("TR50",   "Tirzepatide",           "50mg",     "$456"),
-        ("TR60",   "Tirzepatide",           "60mg",     "$547"),
-        ("TR80",   "Tirzepatide",           "80mg",     "$729"),
-        ("TR100",  "Tirzepatide",           "100mg",    "$795"),
-        ("RT5",    "Retatrutide",           "5mg",      "$67"),
-        ("RT10",   "Retatrutide",           "10mg",     "$95"),
-        ("RT15",   "Retatrutide",           "15mg",     "$142"),
-        ("RT20",   "Retatrutide",           "20mg",     "$189"),
-        ("RT30",   "Retatrutide",           "30mg",     "$274"),
-        ("RT40",   "Retatrutide",           "40mg",     "$365"),
-        ("RT50",   "Retatrutide",           "50mg",     "$456"),
-        ("RT60",   "Retatrutide",           "60mg",     "$547"),
-        ("RT80",   "Retatrutide",           "80mg",     "$729"),
-        ("RT100",  "Retatrutide",           "100mg",    "$894"),
-        ("CGL5",   "Cagrilintide",          "5mg",      "$115"),
-        ("CGL10",  "Cagrilintide",          "10mg",     "$181"),
-        ("MDT5",   "Mazdutide",             "5mg",      "$192"),
-        ("MDT10",  "Mazdutide",             "10mg",     "$203"),
-        ("DUL5",   "Dulaglutide",           "5mg",      "$315"),
-        ("DUL10",  "Dulaglutide",           "10mg",     "$514"),
-        ("SUR2",   "Survodutide",           "2mg",      "$265"),
-        ("SUR5",   "Survodutide",           "5mg",      "$480"),
-        ("SUR10",  "Survodutide",           "10mg",     "$820"),
-        ("LGT5",   "Liraglutide",           "5mg",      "$224"),
-        ("LGT10",  "Liraglutide",           "10mg",     "$398"),
-        ("LGT20",  "Liraglutide",           "20mg",     "$737"),
+        ("SM5",    "Semaglutide",           "5mg"),
+        ("SM10",   "Semaglutide",           "10mg"),
+        ("SM15",   "Semaglutide",           "15mg"),
+        ("SM20",   "Semaglutide",           "20mg"),
+        ("SM30",   "Semaglutide",           "30mg"),
+        ("SM40",   "Semaglutide",           "40mg"),
+        ("SM50",   "Semaglutide",           "50mg"),
+        ("SM60",   "Semaglutide",           "60mg"),
+        ("SM100",  "Semaglutide",           "100mg"),
+        ("TR5",    "Tirzepatide",           "5mg"),
+        ("TR10",   "Tirzepatide",           "10mg"),
+        ("TR15",   "Tirzepatide",           "15mg"),
+        ("TR20",   "Tirzepatide",           "20mg"),
+        ("TR30",   "Tirzepatide",           "30mg"),
+        ("TR40",   "Tirzepatide",           "40mg"),
+        ("TR50",   "Tirzepatide",           "50mg"),
+        ("TR60",   "Tirzepatide",           "60mg"),
+        ("TR100",  "Tirzepatide",           "100mg"),
+        ("TR120",  "Tirzepatide",           "120mg"),
+        ("RT5",    "Retatrutide",           "5mg"),
+        ("RT10",   "Retatrutide",           "10mg"),
+        ("RT15",   "Retatrutide",           "15mg"),
+        ("RT20",   "Retatrutide",           "20mg"),
+        ("RT30",   "Retatrutide",           "30mg"),
+        ("RT40",   "Retatrutide",           "40mg"),
+        ("RT50",   "Retatrutide",           "50mg"),
+        ("RT60",   "Retatrutide",           "60mg"),
+        ("RT100",  "Retatrutide",           "100mg"),
+        ("CGL5",   "Cagrilintide",          "5mg"),
+        ("CGL10",  "Cagrilintide",          "10mg"),
+        ("MDT5",   "Mazdutide",             "5mg"),
+        ("MDT10",  "Mazdutide",             "10mg"),
+        ("DUL5",   "Dulaglutide",           "5mg"),
+        ("DUL10",  "Dulaglutide",           "10mg"),
+        ("SUR2",   "Survodutide",           "2mg"),
+        ("SUR5",   "Survodutide",           "5mg"),
+        ("SUR10",  "Survodutide",           "10mg"),
+        ("LGT5",   "Liraglutide",           "5mg"),
+        ("LGT10",  "Liraglutide",           "10mg"),
+        ("LGT20",  "Liraglutide",           "20mg"),
     ]),
     ("Healing & Recovery", [
-        ("BC5",    "BPC-157",               "5mg",      "$58"),
-        ("BC10",   "BPC-157",               "10mg",     "$72"),
-        ("BT5",    "TB-500",                "5mg",      "$92"),
-        ("BT10",   "TB-500",                "10mg",     "$140"),
-        ("BB10",   "BPC+TB Blend",          "10mg",     "$108"),
-        ("BB20",   "BPC+TB Blend",          "20mg",     "$166"),
-        ("GLOW70", "BPC+TB+GHK Blend",      "70mg",     "$154"),
-        ("KLOW",   "BPC+TB+GHK+KPV",        "80mg",     "$220"),
-        ("CU50",   "GHK-Cu",                "50mg",     "$71"),
-        ("CU100",  "GHK-Cu",                "100mg",    "$116"),
-        ("KPV5",   "KPV",                   "5mg",      "$63"),
-        ("KPV10",  "KPV",                   "10mg",     "$100"),
-        ("P41",    "PT-141",                "10mg",     "$72"),
-        ("ML10",   "Melanotan II",          "10mg",     "$149"),
-        ("2AD",    "AOD-9604",              "2mg",      "$100"),
-        ("5AD",    "AOD-9604",              "5mg",      "$191"),
-        ("10AD",   "AOD-9604",              "10mg",     "$332"),
-        ("GND2",   "Gonadorelin",           "2mg",      "$56"),
-        ("AP2",    "Adipotide",             "2mg",      "$86"),
-        ("AP5",    "Adipotide",             "5mg",      "$166"),
-        ("RA10",   "Ara-290",               "10mg",     "$149"),
-        ("RA16",   "Ara-290",               "16mg",     "$238"),
-        ("NP810",  "Snap-8",                "10mg",     "$133"),
-        ("NP8100", "Snap-8",                "100mg",    "$663"),
-        ("LC216",  "Lipo-C",                "10ml",     "$92"),
-        ("MIC10",  "MIC (Lipo+B12)",        "10ml",     "$298"),
-        ("BAC10",  "Bacteriostatic Water",  "10ml",     "$17"),
-        ("STW10",  "Sterile Water",         "10ml",     "$17"),
+        ("BC5",    "BPC-157",               "5mg"),
+        ("BC10",   "BPC-157",               "10mg"),
+        ("BT5",    "TB-500",                "5mg"),
+        ("BT10",   "TB-500",                "10mg"),
+        ("BB10",   "BPC+TB Blend",          "10mg"),
+        ("BB20",   "BPC+TB Blend",          "20mg"),
+        ("GLOW70", "BPC+TB+GHK Blend",      "70mg"),
+        ("KLOW",   "BPC+TB+GHK+KPV",        "80mg"),
+        ("CU50",   "GHK-Cu",                "50mg"),
+        ("CU100",  "GHK-Cu",                "100mg"),
+        ("KPV5",   "KPV",                   "5mg"),
+        ("KPV10",  "KPV",                   "10mg"),
+        ("P41",    "PT-141",                "10mg"),
+        ("ML10",   "Melanotan II",          "10mg"),
+        ("2AD",    "AOD-9604",              "2mg"),
+        ("5AD",    "AOD-9604",              "5mg"),
+        ("10AD",   "AOD-9604",              "10mg"),
+        ("GND2",   "Gonadorelin",           "2mg"),
+        ("AP2",    "Adipotide",             "2mg"),
+        ("AP5",    "Adipotide",             "5mg"),
+        ("RA10",   "Ara-290",               "10mg"),
+        ("RA16",   "Ara-290",               "16mg"),
+        ("NP810",  "Snap-8",                "10mg"),
+        ("NP8100", "Snap-8",                "100mg"),
+        ("LC216",  "Lipo-C",                "10ml"),
+        ("MIC10",  "MIC (Lipo+B12)",        "10ml"),
+        ("BAC10",  "Bacteriostatic Water",  "10ml"),
     ]),
     ("GH / Growth", [
-        ("IP2",    "Ipamorelin",            "2mg",      "$47"),
-        ("IP5",    "Ipamorelin",            "5mg",      "$58"),
-        ("IP10",   "Ipamorelin",            "10mg",     "$100"),
-        ("CND2",   "CJC-1295 (no DAC)",     "2mg",      "$42"),
-        ("CND5",   "CJC-1295 (no DAC)",     "5mg",      "$98"),
-        ("CND10",  "CJC-1295 (no DAC)",     "10mg",     "$158"),
-        ("CD5",    "CJC-1295 (w/ DAC)",     "5mg",      "$166"),
-        ("CP10",   "CJC+Ipa Blend",         "10mg",     "$114"),
-        ("SMO5",   "Sermorelin",            "5mg",      "$90"),
-        ("SMO10",  "Sermorelin",            "10mg",     "$119"),
-        ("G25",    "GHRP-2",               "5mg",      "$34"),
-        ("G210",   "GHRP-2",               "10mg",     "$58"),
-        ("G65",    "GHRP-6",               "5mg",      "$38"),
-        ("G610",   "GHRP-6",               "10mg",     "$42"),
-        ("HX2",    "Hexarelin",             "2mg",      "$56"),
-        ("HX5",    "Hexarelin",             "5mg",      "$104"),
-        ("KS5",    "KissPeptin-10",         "5mg",      "$72"),
-        ("KS10",   "KissPeptin-10",         "10mg",     "$116"),
-        ("FM2",    "MGF",                   "2mg",      "$58"),
-        ("FMP2",   "PEG MGF",              "2mg",      "$101"),
-        ("H8",     "HGH 191AA",             "8iu",      "$65"),
-        ("H10",    "HGH 191AA",             "10iu",     "$80"),
-        ("H15",    "HGH 191AA",             "15iu",     "$106"),
-        ("G5K",    "HCG",                   "5000IU",   "$104"),
-        ("G10K",   "HCG",                   "10000IU",  "$164"),
-        ("IG1",    "IGF-1 LR3",             "1mg",      "$204"),
-        ("IGD",    "IGF-DES",               "2mg",      "$77"),
-        ("FN1",    "Follistatin",           "1mg",      "$290"),
-        ("AE1",    "ACE-031",               "1mg",      "$243"),
-        ("TY10",   "Thymalin",              "10mg",     "$77"),
-        ("TSM2",   "Tesamorelin",           "2mg",      "$72"),
-        ("TSM5",   "Tesamorelin",           "5mg",      "$115"),
-        ("TSM10",  "Tesamorelin",           "10mg",     "$195"),
-        ("TSM20",  "Tesamorelin",           "20mg",     "$290"),
-        ("ACTH5",  "ACTH",                  "5mg",      "$183"),
-        ("EP0",    "EPO",                   "3000IU",   "$149"),
+        ("IP2",    "Ipamorelin",            "2mg"),
+        ("IP5",    "Ipamorelin",            "5mg"),
+        ("IP10",   "Ipamorelin",            "10mg"),
+        ("CND2",   "CJC-1295 (no DAC)",     "2mg"),
+        ("CND5",   "CJC-1295 (no DAC)",     "5mg"),
+        ("CND10",  "CJC-1295 (no DAC)",     "10mg"),
+        ("CD5",    "CJC-1295 (w/ DAC)",     "5mg"),
+        ("CP10",   "CJC+Ipa Blend",         "10mg"),
+        ("SMO5",   "Sermorelin",            "5mg"),
+        ("SMO10",  "Sermorelin",            "10mg"),
+        ("G25",    "GHRP-2",               "5mg"),
+        ("G210",   "GHRP-2",               "10mg"),
+        ("G65",    "GHRP-6",               "5mg"),
+        ("G610",   "GHRP-6",               "10mg"),
+        ("HX2",    "Hexarelin",             "2mg"),
+        ("HX5",    "Hexarelin",             "5mg"),
+        ("KS5",    "KissPeptin-10",         "5mg"),
+        ("KS10",   "KissPeptin-10",         "10mg"),
+        ("FM2",    "MGF",                   "2mg"),
+        ("FMP2",   "PEG MGF",              "2mg"),
+        ("H8",     "HGH 191AA",             "8iu"),
+        ("H10",    "HGH 191AA",             "10iu"),
+        ("H15",    "HGH 191AA",             "15iu"),
+        ("G5K",    "HCG",                   "5000IU"),
+        ("G10K",   "HCG",                   "10000IU"),
+        ("IG1",    "IGF-1 LR3",             "1mg"),
+        ("IGD",    "IGF-DES",               "2mg"),
+        ("FN1",    "Follistatin",           "1mg"),
+        ("AE1",    "ACE-031",               "1mg"),
+        ("TY10",   "Thymalin",              "10mg"),
+        ("TSM2",   "Tesamorelin",           "2mg"),
+        ("TSM5",   "Tesamorelin",           "5mg"),
+        ("TSM10",  "Tesamorelin",           "10mg"),
+        ("TSM20",  "Tesamorelin",           "20mg"),
+        ("ACTH5",  "ACTH",                  "5mg"),
+        ("EP0",    "EPO",                   "3000IU"),
     ]),
     ("Cognitive & Wellness", [
-        ("NJ100",  "NAD",                   "100mg",    "$55"),
-        ("NJ500",  "NAD",                   "500mg",    "$135"),
-        ("NJ1000", "NAD",                   "1000mg",   "$195"),
-        ("GTT4",   "Glutathione",           "400mg",    "$67"),
-        ("GTT",    "Glutathione",           "600mg",    "$87"),
-        ("GTT15",  "Glutathione",           "1500mg",   "$166"),
-        ("ET10",   "Epithalon",             "10mg",     "$64"),
-        ("ET50",   "Epithalon",             "50mg",     "$240"),
-        ("MS10",   "MOTS-c",                "10mg",     "$82"),
-        ("MS20",   "MOTS-c",                "20mg",     "$112"),
-        ("MS40",   "MOTS-c",                "40mg",     "$197"),
-        ("TA2",    "Thymosin Alpha-1",      "2mg",      "$73"),
-        ("TA5",    "Thymosin Alpha-1",      "5mg",      "$105"),
-        ("TA10",   "Thymosin Alpha-1",      "10mg",     "$176"),
-        ("5AM",    "5-Amino/MQ",            "5mg",      "$183"),
-        ("5AM10",  "5-Amino/MQ",            "10mg",     "$261"),
-        ("50AM",   "5-Amino/MQ",            "50mg",     "$812"),
-        ("SK5",    "Selank",                "5mg",      "$55"),
-        ("SK10",   "Selank",                "10mg",     "$92"),
-        ("XA5",    "Semax",                 "5mg",      "$53"),
-        ("XA10",   "Semax",                 "10mg",     "$92"),
-        ("DS2",    "DSIP",                  "2mg",      "$38"),
-        ("DS5",    "DSIP",                  "5mg",      "$58"),
-        ("DS10",   "DSIP",                  "10mg",     "$104"),
-        ("PI5",    "Pinealon",              "5mg",      "$75"),
-        ("PI10",   "Pinealon",              "10mg",     "$125"),
-        ("MEL10",  "Melatonin",             "10mg",     "$133"),
-        ("OT2",    "Oxytocin",              "2mg",      "$72"),
-        ("OT5",    "Oxytocin",              "5mg",      "$125"),
-        ("OT10",   "Oxytocin",              "10mg",     "$232"),
-        ("AR50",   "AICAR",                 "50mg",     "$80"),
-        ("2S10",   "SS-31",                 "10mg",     "$100"),
-        ("2S50",   "SS-31",                 "50mg",     "$414"),
-        ("ADA5",   "Admax",                 "5mg",      "$158"),
-        ("ADA10",  "Admax",                 "10mg",     "$265"),
-        ("F42",    "FOXO4-DRI",             "2mg",      "$232"),
-        ("F45",    "FOXO4-DRI",             "5mg",      "$373"),
-        ("F410",   "FOXO4-DRI",             "10mg",     "$629"),
-        ("CAR10",  "Cardiogen",             "10mg",     "$174"),
-        ("CAR20",  "Cardiogen",             "20mg",     "$298"),
-        ("CART10", "Cartalax",              "10mg",     "$191"),
-        ("CART20", "Cartalax",              "20mg",     "$323"),
-        ("CRY10",  "Crystagen",             "10mg",     "$158"),
-        ("CRY20",  "Crystagen",             "20mg",     "$290"),
-        ("HUM10",  "Humanin",               "10mg",     "$737"),
-        ("MAT10",  "Matrixyl",              "10mg",     "$82"),
-        ("PN5",    "PNC-27",                "5mg",      "$290"),
-        ("SLU5",   "SLU-PP-322",            "5mg",      "$216"),
+        ("NJ100",  "NAD",                   "100mg"),
+        ("NJ500",  "NAD",                   "500mg"),
+        ("NJ1000", "NAD",                   "1000mg"),
+        ("GTT4",   "Glutathione",           "400mg"),
+        ("GTT",    "Glutathione",           "600mg"),
+        ("GTT15",  "Glutathione",           "1500mg"),
+        ("ET10",   "Epithalon",             "10mg"),
+        ("ET50",   "Epithalon",             "50mg"),
+        ("MS10",   "MOTS-c",                "10mg"),
+        ("MS20",   "MOTS-c",                "20mg"),
+        ("MS40",   "MOTS-c",                "40mg"),
+        ("TA2",    "Thymosin Alpha-1",      "2mg"),
+        ("TA5",    "Thymosin Alpha-1",      "5mg"),
+        ("TA10",   "Thymosin Alpha-1",      "10mg"),
+        ("5AM",    "5-Amino/MQ",            "5mg"),
+        ("5AM10",  "5-Amino/MQ",            "10mg"),
+        ("50AM",   "5-Amino/MQ",            "50mg"),
+        ("SK5",    "Selank",                "5mg"),
+        ("SK10",   "Selank",                "10mg"),
+        ("XA5",    "Semax",                 "5mg"),
+        ("XA10",   "Semax",                 "10mg"),
+        ("DS2",    "DSIP",                  "2mg"),
+        ("DS5",    "DSIP",                  "5mg"),
+        ("DS10",   "DSIP",                  "10mg"),
+        ("PI5",    "Pinealon",              "5mg"),
+        ("PI10",   "Pinealon",              "10mg"),
+        ("MEL10",  "Melatonin",             "10mg"),
+        ("OT2",    "Oxytocin",              "2mg"),
+        ("OT5",    "Oxytocin",              "5mg"),
+        ("OT10",   "Oxytocin",              "10mg"),
+        ("AR50",   "AICAR",                 "50mg"),
+        ("2S10",   "SS-31",                 "10mg"),
+        ("2S50",   "SS-31",                 "50mg"),
+        ("ADA5",   "Admax",                 "5mg"),
+        ("ADA10",  "Admax",                 "10mg"),
+        ("F42",    "FOXO4-DRI",             "2mg"),
+        ("F45",    "FOXO4-DRI",             "5mg"),
+        ("F410",   "FOXO4-DRI",             "10mg"),
+        ("CAR10",  "Cardiogen",             "10mg"),
+        ("CAR20",  "Cardiogen",             "20mg"),
+        ("CART10", "Cartalax",              "10mg"),
+        ("CART20", "Cartalax",              "20mg"),
+        ("CRY10",  "Crystagen",             "10mg"),
+        ("CRY20",  "Crystagen",             "20mg"),
+        ("HUM10",  "Humanin",               "10mg"),
+        ("MAT10",  "Matrixyl",              "10mg"),
+        ("PN5",    "PNC-27",                "5mg"),
+        ("SLU5",   "SLU-PP-322",            "5mg"),
     ]),
 ]
+
+
+# ── The price on the sheet IS the price in core/price_sheets.py ──────────────
+# _LAYOUT above is presentation only: which SKUs appear, in what order, under
+# which heading, spelled the way the customer reads them. The NUMBER comes from
+# one place, so the sheet and the quote cannot drift apart — that drift is what
+# HANDOFF §29 and §30b were both about. A SKU in the layout that price_sheets
+# does not carry is dropped here rather than rendered at a stale price.
+from core.price_sheets import ROWS as _PRICE_ROWS
+
+
+def _with_prices(layout):
+    out = []
+    for _cat, _rows in layout:
+        priced = [(sku, product, spec, f"${int(_PRICE_ROWS[sku][4])}")
+                  for sku, product, spec in _rows if sku in _PRICE_ROWS]
+        if priced:
+            out.append((_cat, priced))
+    return out
+
+
+CATEGORIES = _with_prices(_LAYOUT)
+
+LAYOUT_SKUS = {sku for _c, rows in _LAYOUT for sku, _p, _s in rows}
+UNLISTED_SKUS = sorted(set(_PRICE_ROWS) - LAYOUT_SKUS)
 
 
 # ── Single source of truth for customer-facing prices ────────────────────────
@@ -938,6 +965,9 @@ def regenerate_all() -> dict:
         "xlsx": str(generate_price_list_xlsx()),
         "xls": str(generate_price_list_xls()),
         "pdf": str(generate_price_list_pdf()),
+        # The US warehouse sheet rides along here for the same reason as
+        # everything else: formats generated separately are formats that drift.
+        "us_xlsx": str(generate_price_list_us_xlsx()),
     }
     to_static = XLSX_PATH.parent.name == "static"
     if not to_static:
@@ -953,3 +983,70 @@ def regenerate_all() -> dict:
 if __name__ == "__main__":
     regenerate_all()
     print("Done.")
+
+
+# ── The US warehouse sheet ───────────────────────────────────────────────────
+# Deliberately NOT built with matplotlib and NOT bilingual. The China sheet is a
+# rendered image/PDF in two languages because it goes to buyers who read Chinese
+# and to a lab that checks it; the US sheet is 30 rows of English going to US
+# buyers, so it is a plain workbook written with openpyxl. That also means it
+# builds correctly anywhere — no font dependency, so it cannot repeat the tofu
+# failure of HANDOFF §30d, and it can be regenerated off a Mac.
+
+def generate_price_list_us_xlsx() -> Path:
+    """Write the US warehouse price list to US_XLSX_PATH and return the path."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from core import pricing
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "US Warehouse"
+
+    navy = "FF13294B"
+    header_fill = PatternFill("solid", fgColor=navy)
+    thin = Side(style="thin", color="FFD9D9D9")
+
+    ws.merge_cells("A1:C1")
+    ws["A1"] = "NORTHLINE GROUP — US WAREHOUSE"
+    ws["A1"].font = Font(bold=True, size=16, color=navy)
+    ws["A1"].alignment = Alignment(horizontal="center")
+
+    ws.merge_cells("A2:C2")
+    ws["A2"] = "US domestic stock  •  overnight shipping  •  $30 flat"
+    ws["A2"].font = Font(size=11, italic=True)
+    ws["A2"].alignment = Alignment(horizontal="center")
+
+    for col, title in zip("ABC", ("Product", "Per vial", "Per kit (10 vials)")):
+        c = ws[f"{col}4"]
+        c.value = title
+        c.font = Font(bold=True, color="FFFFFFFF")
+        c.fill = header_fill
+        c.alignment = Alignment(horizontal="center")
+
+    row = 5
+    for r in pricing.US_CATALOG:
+        ws.cell(row, 1, r["sheet_label"])
+        ws.cell(row, 2, r["vial_price"]).number_format = '"$"#,##0'
+        ws.cell(row, 3, r["kit_price"]).number_format = '"$"#,##0'
+        for col in range(1, 4):
+            ws.cell(row, col).border = Border(bottom=thin)
+        ws.cell(row, 2).alignment = Alignment(horizontal="right")
+        ws.cell(row, 3).alignment = Alignment(horizontal="right")
+        row += 1
+
+    ws.merge_cells(f"A{row + 1}:C{row + 1}")
+    note = ws[f"A{row + 1}"]
+    note.value = ("One price at any quantity. Volume pricing is available on our "
+                  "China warehouse list — ask us.")
+    note.font = Font(size=10, italic=True)
+    note.alignment = Alignment(horizontal="center")
+
+    ws.column_dimensions["A"].width = 44
+    ws.column_dimensions["B"].width = 14
+    ws.column_dimensions["C"].width = 20
+    ws.freeze_panes = "A5"
+
+    US_XLSX_PATH.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(str(US_XLSX_PATH))
+    return US_XLSX_PATH

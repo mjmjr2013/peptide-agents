@@ -1614,3 +1614,169 @@ Landon sequence, and pins that recovery finds a nameless order but ignores a shi
 `NL-20260822-DDD6` already shipped, so its record is only history — but it is still nameless in
 Airtable. Backfilling "Landon Anderson" from the transcript is a one-line write; left undone
 deliberately, since editing a shipped order's record is Jordan's call.
+
+## 31. Negotiation removed; fixed prices by warehouse and order size (2026-09-03) — BUILT IN COWORK, NOT YET DEPLOYED
+
+Jordan, 2026-09-03: **stop negotiating.** Every price now comes off a sheet Daniel publishes,
+chosen by two facts — which warehouse, and how many kits in total. There is no discount
+authority, no floor to defend, no cap, and no large-order escalation, because there is nothing
+left to escalate about.
+
+    CHINA     1-24 kits   standard      25-99 kits   reseller      100+ kits   trading company
+    US        one flat price at any quantity, and the only place we sell single vials
+
+The 5-kit MOQ in Daniel's notes was **scrapped** by Jordan — 1 kit is a normal China order.
+
+### Where the numbers live now
+
+`core/price_sheets.py` is GENERATED from Daniel's four workbooks by
+`tools/build_price_sheets.py`. Re-running that script on a new set of sheets is the entire
+update procedure:
+
+    python3 tools/build_price_sheets.py ~/Downloads
+
+151 SKUs × 5 numbers is not something to re-type by hand, and CLAUDE.md says as much. Nothing
+else in the repo holds a price any more: `price_image.CATEGORIES` kept its layout (which SKUs,
+what order, which heading, the customer-facing spelling) but its NUMBERS are now looked up from
+price_sheets at import, so the sheet and the quote cannot drift — the §29/§30b failure mode is
+structurally gone rather than merely tested for.
+
+**We kept OUR SKU codes.** Daniel's sheets renamed thirteen (`EP0`→`EPO`, `H8`→`HGH8`,
+`LGT5`→`LIR5`, `PI5`→`PIN5`, `KLOW`→`KLOW80`, …). `static/labels/<SKU>.png` is the sticker
+mapping and every Airtable order ever placed carries the old code, so renaming would orphan 13
+sticker files and break history for nothing. `SKU_ALIASES` in the generator is the only place
+his codes appear.
+
+### The sheets had four real defects, and Jordan ruled on each
+
+Found by cross-checking his four workbooks against each other and against the live catalog:
+
+- **TB-500 listed twice** — `BT5`/`BT10` at $105/$160 and `TB2(BT)`/`TB5(BT)`/`TB10(BT)`
+  ("TB500 CTHYMOSIN B4 Acetate") at $85/$160/$245, 17 rows apart. Same product.
+- **Sermorelin listed twice** — `SMO5`/`SMO10` at $105/$135 and `SMO-2`/`SMO-5`/`SMO-10`
+  ("Sermorelin Acetate") at $140/$255/$455, **75 rows apart**, the second block appended at the
+  very bottom where it does not read as a duplicate. A 2.4× spread on the same product, and
+  `find_item` would have returned whichever matched first.
+- **`BB10` listed twice** under the SAME SKU code — $125 and $120.
+- **`IP5`/`IP10` listed twice** at identical prices (harmless).
+- **Dermorphin was back** — all four doses, four days after §30d removed them.
+- **Etelcalcetide priced "Quote"** — unpriceable, and there is no negotiation path left to
+  price it through.
+
+Jordan's call: take the LOWER row on both duplicates, keep Dermorphin out, drop Etelcalcetide,
+de-duplicate Ipamorelin. **The source workbooks in `~/Downloads` were edited to match** (162 →
+151 rows each, same SKU set and order across all four) so the next regeneration cannot
+reintroduce any of it. Dropping the higher blocks also drops the only 2 mg TB-500 and 2 mg
+Sermorelin; neither was ever in our catalog. Note `SMO-2` was $140 for 2 mg against `SMO5` at
+$105 for 5 mg — more money for less product.
+
+### Catalog moves
+
+151 SKUs before, 151 after: 148 carried over, 3 out, 3 in.
+
+- **Out:** `RT80`, `TR80` (both live at $729 — simply absent from Daniel's sheets) and `STW10`
+  (sterile water). Jordan: pulled **"for now until we confirm with lab they can sell it"**, so
+  this is a pause, not a discontinuation.
+- **In:** `SM60` $400, `SM100` $455, `TR120` $380. **None of the three has sticker artwork** —
+  they will show the red *no sticker* warning on the labeling manifest until Daniel's crew
+  supplies it. That is §30e's mechanism working, not a bug.
+- 147 prices moved. Median **+12%**, but the long tail moved down hard: `50AM` −83%, `FN1` −71%,
+  `TR100` −57%, `RT100` −52%.
+- **Bac water $17 → $20**, which partly undoes the 2026-08-31 freight-pricing decision, and
+  sterile water is no longer beside it to stay level with. `catalog.UNRESTRICTED_SKUS` is now
+  just `{"BAC10"}`.
+
+`catalog.RETIRED_LABEL_SKUS` is new: it exempts the three paused SKUs' artwork from the orphan
+check **without** making them sellable. Dermorphin's stickers were deleted outright on
+2026-08-31 because that call was final; these are explicitly temporary, and re-cutting artwork
+to un-pause a product is waste. `test_paused_skus_keep_their_artwork_but_are_not_sellable`
+asserts both halves.
+
+### The baseline was replaced, not regenerated away
+
+CLAUDE.md forbids regenerating `tests/test_price_baseline.py` to turn a red test green, and 147
+prices moving at once is exactly the situation that rule exists for. So the old snapshot is
+**still in the file**, renamed `BASELINE_2026_08_31`, and `test_every_price_move_is_accounted_for`
+asserts that every single difference between it and today's `BASELINE` appears in
+`PRICE_MOVES_2026_09_03` with both numbers. The change is wholesale but it is enumerated, and a
+148th price that moved without being written down still fails.
+
+New pins alongside it: `RESELLER_BASELINE`, `TRADING_BASELINE`, `US_BASELINE` (vial + kit), the
+tier boundaries themselves (1/24/25/99/100/500), and a check that US prices do NOT move with
+volume. The 3× floor assertions are gone — nothing can push a price down any more — and are
+replaced by "no tier price is below cost", asked at the trading tier because that is the one
+that would be.
+
+### Two-pass pricing, and why
+
+`_validate_line_items` now sums the kits FIRST and prices second. The negotiation-era code
+looked the discount cap up per line with that line's own quantity; carried forward unchanged
+that shape would quote a 25-kit order made of five 5-kit lines at the standard rate —
+overcharging precisely the buyer who spread their order across products. It also now **discards
+Lily's `unit_price` entirely** and substitutes the sheet price. Her number is kept only to
+detect a mismatch, log it, and restate the real figure to the customer; there is no second
+Claude call any more, because with fixed prices there is nothing to re-derive.
+
+Manual mode still exists but has ONE remaining trigger: a line we cannot price (§29 fail-closed,
+now including a China-only SKU asked for at the US warehouse — 121 of 151 SKUs).
+
+### Warehouse selection
+
+Lily asks which warehouse early; the prompt is built from that choice, so the catalog she sees
+IS that warehouse's. `_warehouse` (phone → "china"/"us") holds it, `RESET` clears it, and it is
+written onto the order record — **tolerantly**: Airtable rejects an entire create with 422 for
+an unknown field, so a `warehouse` column Jordan has not added yet would take down every order.
+It is attempted once, and on that specific failure retried without it and disabled for the
+process. **Add a `warehouse` field to the Orders table and it starts populating with no code
+change.** Until then, a mid-order redeploy loses it in memory — Lily re-derives it from the
+recovered transcript on her next reply, which is why the prompt insists she set the field on
+every turn and not just the one where the buyer chose.
+
+The old prompt line *"We ship everything from China. We do NOT have US-based fulfillment. No US
+warehouse."* was flatly false as of today and is gone.
+
+### Shipping
+
+China unchanged ($95 / free over $1,000 / $235 expedited — Daniel's note quotes the same
+numbers). **US is $30 flat, full stop:** no expedited tier and **no free-shipping threshold**,
+still $30 on a $5,000 order. Do not "fix" that by copying `FREE_OVER_USD` across — the China
+threshold buys a four-week consolidated freight lane; a domestic overnight label costs what it
+costs. The 2 kg split logic is untouched.
+
+### A second served sheet
+
+`static/price_list_us.xlsx`, built by `generate_price_list_us_xlsx()` and served at
+`/Northline_US_Warehouse_Price_List.xlsx`. Deliberately **openpyxl, not matplotlib, and not
+bilingual**: 30 rows of English for US buyers, so it has no font dependency, cannot repeat the
+§30d tofu failure, and builds correctly off a Mac. `regenerate_all()` builds it alongside the
+others so the formats cannot drift.
+
+### State in Cowork: 831 passing, 12 red
+
+The 12 are all missing static assets that only exist on the Mac — the label PNGs and the
+`price_list.{xlsx,xls,pdf}` that must be rebuilt there. **That is the §30b guard doing its job:
+the committed sheets still carry the old prices.** They go green at step 2 below.
+
+### To deploy
+
+1. `python3 tools/build_price_sheets.py ~/Downloads` — optional; `core/price_sheets.py` is
+   already generated and committed. Run it only to prove it reproduces byte-for-byte.
+2. **`bash regenerate_price_sheets.sh`** — rebuilds all six formats into `static/`, re-stamps,
+   and re-runs the four price test files. The 12 reds go green here.
+3. `python3 -m pytest tests/ -q` — full suite.
+4. Commit `static/` or production keeps serving the old numbers (§30a).
+5. Push, force-deploy by SHA, confirm the running commit (§10).
+6. **In Airtable:** add a `warehouse` single-line-text field to the Orders table. Optional, but
+   without it no order records which warehouse it shipped from.
+
+### Still open with Daniel
+
+- `LIR30` is labelled **20mg** on his sheet — the SKU says 30, the spec says 20. We followed the
+  spec (it maps to our `LGT20`). His typo to confirm.
+- `SLU-PP-332` on his sheet vs `SLU-PP-322` in our catalog. We kept ours; one of them is wrong
+  and it is a real compound name.
+- Artwork for `SM60`, `SM100`, `TR120`.
+- Whether `RT80`, `TR80` and sterile water come back.
+- The group volume discounts in his notes (10% at 5,000 kits/month rising to 50% at 100,000) are
+  **not implemented** — that is a standing monthly-commitment deal, not an order-size tier, and
+  Lily has no way to know a buyer's monthly volume. Left for a human.

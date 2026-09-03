@@ -39,6 +39,9 @@ from pathlib import Path
 
 from core import price_image, pricing
 from core.aliases import canon
+from core.price_sheets import ROWS as _PRICE_ROWS
+
+_US_BY_SKU = {r["sku"]: r for r in pricing.US_CATALOG}
 
 # ── Form classes ─────────────────────────────────────────────────────────────
 # The distinction that matters for shipping is water. A lyophilized kit is
@@ -135,13 +138,29 @@ def labels_missing() -> list[str]:
     return sorted(s for s in BY_SKU if label_path(s) is None)
 
 
+# Artwork we are deliberately KEEPING for a SKU that is not currently sold.
+#
+# Jordan pulled these on 2026-09-03 pending confirmation from the lab that they
+# can be supplied — "for now", not discontinued. Dermorphin's stickers were
+# deleted outright on 2026-08-31 because that decision was final; these are not,
+# and re-cutting three sheets of artwork to un-pause a product is pure waste.
+#
+# Being listed here ONLY exempts the file from the orphan check. It does not
+# make the SKU sellable: it is absent from core/price_sheets.py, so it does not
+# price, and an order line for it fails closed like any other (HANDOFF §29).
+RETIRED_LABEL_SKUS: frozenset[str] = frozenset({"RT80", "TR80", "STW10"})
+
+
 def labels_orphaned() -> list[str]:
-    """Sticker files that match no SKU we sell — artwork for a discontinued or
-    not-yet-listed product. Harmless, but worth knowing about."""
+    """Sticker files that match no SKU we sell and are not deliberately kept —
+    artwork for a discontinued or not-yet-listed product. Harmless, but worth
+    knowing about."""
     if not LABEL_DIR.is_dir():
         return []
     return sorted(p.stem for p in LABEL_DIR.iterdir()
-                  if p.suffix.lower() in LABEL_EXTENSIONS and p.stem.upper() not in BY_SKU)
+                  if p.suffix.lower() in LABEL_EXTENSIONS
+                  and p.stem.upper() not in BY_SKU
+                  and p.stem.upper() not in RETIRED_LABEL_SKUS)
 
 # ── Customs risk ─────────────────────────────────────────────────────────────
 # The 2 kg package cap is about SEIZURE RISK, not carrier limits: a small parcel
@@ -160,7 +179,12 @@ def labels_orphaned() -> list[str]:
 # A wrong entry here means an oversized box of something that should have been
 # split, so add to this ONLY on an explicit decision, never by inference from
 # form or price.
-UNRESTRICTED_SKUS: frozenset[str] = frozenset({"BAC10", "STW10"})
+#
+# STW10 (sterile water) was removed on 2026-09-03: Daniel's new sheets do not
+# carry it, and Jordan pulled it pending confirmation from the lab that they can
+# sell it. Its reasoning is preserved above so it can be added straight back if
+# it returns — the exemption was never about the SKU, it was about the contents.
+UNRESTRICTED_SKUS: frozenset[str] = frozenset({"BAC10"})
 
 
 def is_unrestricted(sku: str) -> bool:
@@ -202,8 +226,9 @@ class Item:
 
     __slots__ = ("sku", "product", "spec", "sheet_product", "sheet_spec",
                  "category", "unit", "dose", "vials", "form", "cost",
-                 "list_price", "floor_price", "unit_weight_g", "weight_source",
-                 "label_file")
+                 "list_price", "reseller_price", "trading_price",
+                 "us_kit_price", "us_vial_price",
+                 "unit_weight_g", "weight_source", "label_file")
 
     def __init__(self, **kw):
         for k in self.__slots__:
@@ -212,6 +237,16 @@ class Item:
     @property
     def is_liquid(self) -> bool:
         return self.form == LIQUID
+
+    @property
+    def in_us_warehouse(self) -> bool:
+        """True if the US warehouse stocks this SKU. Only 30 of 151 do."""
+        return self.us_kit_price is not None
+
+    def price(self, kits: float = 1,
+              warehouse: str = pricing.DEFAULT_WAREHOUSE) -> float | None:
+        """Per-kit price at an order size. None means we cannot sell it there."""
+        return pricing.price_for_sku(self.sku, kits, warehouse)
 
     def weight_g(self, kits: float = 1) -> float:
         """Shipped weight for `kits` kits of this SKU, in grams."""
@@ -255,6 +290,9 @@ def _build() -> tuple[dict[str, Item], dict[tuple[str, str], Item]]:
             except ValueError:
                 list_price = None
 
+            _sheet = _PRICE_ROWS.get(sku)
+            _us = _US_BY_SKU.get(sku)
+
             form = _form_of(spec)
             # SKU override beats product override beats form default.
             weight = SKU_WEIGHT_G.get(sku)
@@ -279,7 +317,10 @@ def _build() -> tuple[dict[str, Item], dict[tuple[str, str], Item]]:
                 form=form,
                 cost=cost,
                 list_price=list_price,
-                floor_price=(math.ceil(cost * pricing.MARKUP_FLOOR) if cost else None),
+                reseller_price=_sheet[5] if _sheet else None,
+                trading_price=_sheet[6] if _sheet else None,
+                us_kit_price=(_us["kit_price"] if _us else None),
+                us_vial_price=(_us["vial_price"] if _us else None),
                 unit_weight_g=float(weight),
                 weight_source=source,
                 label_file=None,   # filled in below, once label_path() is defined

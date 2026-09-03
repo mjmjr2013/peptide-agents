@@ -68,12 +68,23 @@ and tell him the one line to paste.
 Message copy, templates, pricing, and the WhatsApp profile are all seen by real buyers. Confirm with
 Jordan before changing any of them, even when the change looks obviously correct.
 
-**Prices are pinned.** `tests/test_price_baseline.py` holds a hardcoded snapshot of all 155 list
-prices plus a log of every deliberate move. Changing a price means editing the price sheet, the
-baseline and `INTENTIONAL_CHANGES` in one commit. Never regenerate that baseline to turn a red test
-green — it exists precisely because the older suite compared the price sheet against itself and so
-could not catch an edit (HANDOFF §30). Changing a price also means regenerating the price-list
-image/XLSX/PDF, or the customer is still sent the old number.
+**Prices are pinned.** `tests/test_price_baseline.py` holds a hardcoded snapshot of all 151 list
+prices — plus the reseller, trading and US tiers — and a log of every deliberate move. Never
+regenerate that baseline to turn a red test green; it exists precisely because the older suite
+compared the price sheet against itself and so could not catch an edit (HANDOFF §30). When a whole
+sheet is replaced, keep the old snapshot and enumerate the diff, as §31 does with
+`BASELINE_2026_08_31` / `PRICE_MOVES_2026_09_03`.
+
+**Every price comes from `core/price_sheets.py`, which is GENERATED** from Daniel's workbooks by
+`tools/build_price_sheets.py` (HANDOFF §31). Do not hand-edit it, and do not put a price anywhere
+else — `price_image.CATEGORIES` holds layout only and looks its numbers up. Changing a price means
+regenerating that module, updating the baseline and its change log in the same commit, and running
+`regenerate_price_sheets.sh` — or the customer is still sent the old number.
+
+**There is no negotiation.** Since 2026-09-03 prices are fixed by warehouse (US / China) and, in
+China, by the TOTAL kits on the order (1-24 / 25-99 / 100+). No discounts, no floor, no cap, no
+large-order escalation. `_validate_line_items` discards whatever price the model produced and
+substitutes the sheet's. If you find yourself reintroducing a range, check with Jordan first.
 
 ## Secrets
 

@@ -157,11 +157,22 @@ class AirtableClient:
 
     def create_pending_order(self, lead_id: str, ship_phone: str, items: list[dict],
                              total_usd: float, coin: str, expected_amount: float,
-                             order_ref: str, week: str) -> dict:
+                             order_ref: str, week: str,
+                             warehouse: str = "") -> dict:
         """items: [{product, spec, kits, line_total, sku}]. Creates the Order (awaiting
-        payment) plus one Order Item row per product."""
+        payment) plus one Order Item row per product.
+
+        `warehouse` ("china"/"us") is written only if the Orders table HAS that
+        field. Airtable rejects the whole create with 422 UNKNOWN_FIELD_NAME for
+        an unknown key, so a field Jordan has not added yet would take down every
+        order the moment this deploys. It is therefore attempted once, and on
+        that specific failure retried without it — the order is worth more than
+        the column. Add the field in Airtable and it starts populating with no
+        code change; until then `_warehouse_field_ok` stays False after the first
+        miss so we do not pay a failed request per order.
+        """
         summary = ", ".join(f"{int(i['kits'])}x {i['product']} {i['spec']}".strip() for i in items)
-        order = self.orders.create({
+        fields = {
             "order_ref": order_ref,
             "lead_id": [lead_id],
             "product": summary,
@@ -172,7 +183,19 @@ class AirtableClient:
             "fulfillment_status": "recorded",
             "week_tag": week,
             "ship_phone": ship_phone,
-        })
+        }
+        order = None
+        if warehouse and self._warehouse_field_ok:
+            try:
+                order = self.orders.create({**fields, "warehouse": warehouse})
+            except Exception as e:
+                if "UNKNOWN_FIELD_NAME" not in str(e):
+                    raise
+                self._warehouse_field_ok = False
+                print("[Airtable] Orders has no 'warehouse' field — add it to record "
+                      "which warehouse each order shipped from. Continuing without it.")
+        if order is None:
+            order = self.orders.create(fields)
         for it in items:
             self.order_items.create({
                 "item": f"{order_ref} · {it['product']} {it['spec']}".strip(),
@@ -184,6 +207,10 @@ class AirtableClient:
                 "line_total": it.get("line_total") or 0,
             })
         return order
+
+    # Flipped False the first time Airtable says the column does not exist, so
+    # the retry above happens once per process rather than once per order.
+    _warehouse_field_ok = True
 
     def mark_order_paid(self, order_id: str, tx_hash: str, paid_at_iso: str) -> dict:
         return self.orders.update(order_id, {

@@ -78,10 +78,21 @@ def test_the_served_workbook_matches_the_catalog_exactly():
 
 
 def test_the_water_price_change_actually_reached_the_workbook():
-    """The specific thing §30a nearly shipped, pinned by name."""
+    """The specific thing §30a nearly shipped, pinned by name.
+
+    Water has now moved twice ($12 -> $17 on 2026-08-31, $17 -> $20 on
+    2026-09-03) and sterile water left the catalog entirely, so pinning the
+    literal is what would go stale next. The property that actually failed in
+    §30a is asserted instead: the number in the file customers download equals
+    the number the agent quotes. tests/test_price_baseline.py is what pins the
+    literal."""
     served = _xlsx_prices()
-    assert served["BAC10"] == 17.0, f"bac water is ${served['BAC10']} on the served sheet"
-    assert served["STW10"] == 17.0, f"sterile water is ${served['STW10']} on the served sheet"
+    assert served["BAC10"] == catalog.get("BAC10").list_price, (
+        f"bac water is ${served['BAC10']} on the served sheet but "
+        f"${catalog.get('BAC10').list_price} in the catalog")
+    assert "STW10" not in served, (
+        "sterile water was removed on 2026-09-03 but is still on the served sheet — "
+        "rebuild it with regenerate_price_sheets.sh")
 
 
 # ── The two formats that cannot be read back ─────────────────────────────────

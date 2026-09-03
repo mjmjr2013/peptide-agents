@@ -166,6 +166,26 @@ def start_webhook_server(port: int = 5000):
                 "Content-Length": str(len(data)),
             })
 
+        # The US warehouse sheet. Served at an English path because the filename
+        # WhatsApp shows is taken from the last path segment, and this one goes to
+        # US buyers — see _send_price_list in agents/messaging_agent.py.
+        def _us_xlsx_bytes():
+            from core.price_image import US_XLSX_PATH, generate_price_list_us_xlsx
+            if not US_XLSX_PATH.exists():
+                generate_price_list_us_xlsx()
+            with open(str(US_XLSX_PATH), "rb") as f:
+                return f.read()
+
+        @app.route("/Northline_US_Warehouse_Price_List.xlsx")
+        @app.route("/price-list-us.xlsx")
+        def price_list_us_xlsx():
+            from flask import Response
+            data = _us_xlsx_bytes()
+            return Response(data, status=200, headers={
+                "Content-Type": _XLSX_CT,
+                "Content-Length": str(len(data)),
+            })
+
         @app.route("/price-list.xls")
         def price_list_xls():
             from flask import Response

@@ -108,7 +108,7 @@ def test_liquid_is_a_class_not_a_bac10_special_case():
     """HANDOFF §29 asked for this explicitly. All four ml-spec SKUs are liquid,
     nothing measured in mg or IU is, and no SKU is named anywhere in the rule."""
     liquid = {i.sku for i in catalog.ITEMS if i.is_liquid}
-    assert liquid == {"BAC10", "STW10", "LC216", "MIC10"}
+    assert liquid == {"BAC10", "LC216", "MIC10"}
     for item in catalog.ITEMS:
         assert (item.unit == "ml") == item.is_liquid, f"{item.sku} misclassified"
 
@@ -222,7 +222,7 @@ def test_value_per_kg_ranks_the_money_losers_last():
 
 # ── The bac water exemption ──────────────────────────────────────────────────
 
-@pytest.mark.parametrize("sku", ["BAC10", "STW10"])
+@pytest.mark.parametrize("sku", ["BAC10"])
 def test_water_ships_whole_regardless_of_weight(sku):
     """Jordan, 2026-08-31: the 2 kg cap is about seizure risk, and water carries
     none. 84 kits is ONE box (22.7 kg), not the fourteen the cap would force."""
@@ -237,7 +237,7 @@ def test_the_exemption_is_water_only_not_liquids():
     """Lipo-C and MIC are liquid, 270 g, and NOT exempt. The rule is about what
     is in the vial at a border, not about the form or the price — so it must
     never be widened by inference."""
-    assert catalog.UNRESTRICTED_SKUS == frozenset({"BAC10", "STW10"})
+    assert catalog.UNRESTRICTED_SKUS == frozenset({"BAC10"})
     liquid = {i.sku for i in catalog.ITEMS if i.is_liquid}
     assert liquid - catalog.UNRESTRICTED_SKUS == {"LC216", "MIC10"}
     for sku in ("LC216", "MIC10"):
@@ -275,11 +275,13 @@ def test_bulk_water_plus_peptides_separates():
     assert len(water) == 1 and water[0]["kits"] == 60
 
 
-def test_both_waters_share_one_uncapped_box():
-    """The exemption is a property of the package's contents, not of one SKU, so
-    a mixed water order still ships as a single box."""
+def test_water_shares_one_uncapped_box_with_itself():
+    """The exemption is a property of the package's CONTENTS, not of one SKU.
+    This used to be asserted with a mixed bac+sterile order; sterile water left
+    the catalog on 2026-09-03, so the same property is asserted on two bac-water
+    lines. Restore the mixed version if sterile water comes back."""
     pkgs = shipping.split_packages([{"sku": "BAC10", "kits": 40},
-                                    {"sku": "STW10", "kits": 40}])
+                                    {"sku": "BAC10", "kits": 40}])
     assert len(pkgs) == 1 and pkgs[0]["kits"] == 80 and pkgs[0]["capped"] is False
 
 
@@ -294,39 +296,38 @@ def test_oversized_package_is_flagged_not_silently_shipped():
 
 # ── The price change ─────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("sku,name", [("BAC10", "Bacteriostatic Water"),
-                                      ("STW10", "Sterile Water")])
-def test_water_is_seventeen_dollars_everywhere(sku, name):
-    """$12 -> $17 on 2026-08-31 to price freight into the product. Every place a
-    customer can see it must agree, or Lily quotes one number and the price sheet
-    shows another."""
-    assert catalog.get(sku).list_price == 17.0
-    assert pricing.get_list_price(name, "10ml") == 17.0
+@pytest.mark.parametrize("sku,name", [("BAC10", "Bacteriostatic Water")])
+def test_water_price_is_the_same_everywhere(sku, name):
+    """$12 -> $17 on 2026-08-31 to price freight into the product; -> $20 on
+    Daniel's 2026-09-03 sheet. The NUMBER is not what this test defends — the
+    baseline test does that. What matters here is that every place a customer
+    can see it agrees, or Lily quotes one number and the sheet shows another.
+
+    The parametrize list held sterile water too until 2026-09-03; it left the
+    catalog, so the pair that had to stay level is now a single row."""
+    expected = catalog.get(sku).list_price
+    assert pricing.get_list_price(name, "10ml") == expected
     whatsapp = "\n".join(pricing.PRICE_LIST_MESSAGES)
     assert f"*{name}*" in whatsapp
     line = [ln for ln in whatsapp.splitlines() if ln.startswith(f"*{name}*")][0]
-    assert "$17.00" in line, f"WhatsApp price list still says: {line}"
+    assert f"${int(expected)}" in line, f"WhatsApp price list still says: {line}"
 
 
-def test_the_two_waters_cost_the_same():
-    """They are the same 270 g of water at the same cost on adjacent lines of the
-    sheet. Any gap just moves bulk buyers to the cheaper row."""
-    assert catalog.get("BAC10").list_price == catalog.get("STW10").list_price
-    assert catalog.get("BAC10").unit_weight_g == catalog.get("STW10").unit_weight_g
-
-
-@pytest.mark.parametrize("sku", ["BAC10", "STW10"])
-def test_water_still_clears_its_own_floor(sku):
+@pytest.mark.parametrize("sku", ["BAC10"])
+def test_water_still_sells_above_cost(sku):
+    """There is no 3x floor any more — nothing negotiates a price down. The
+    question that is left is whether the sheet itself sells water at a loss, and
+    it is asked at the deepest tier because that is the one that could."""
     item = catalog.get(sku)
-    assert item.list_price >= item.floor_price
-    assert item.floor_price == math.ceil(item.cost * pricing.MARKUP_FLOOR)
+    assert item.list_price >= item.reseller_price >= item.trading_price
+    assert item.trading_price > item.cost
 
 
 def test_epo_is_a_ten_vial_kit_like_everything_else():
     """The last spec without an 'x10' suffix — the DSIP bug's shape (§29)."""
     epo = catalog.find("EPO", "3000IU")
     assert epo is not None and epo.vials == 10
-    assert epo.list_price == 149.0, "fixing the spec must not move the price"
+    assert epo.list_price == 170.0, "the 2026-09-03 sheet price for EP0"
     assert all(i.vials == 10 for i in catalog.ITEMS), \
         "every kit is ten vials; a new exception needs its own weight"
 

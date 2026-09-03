@@ -15,9 +15,13 @@ from twilio.twiml.messaging_response import MessagingResponse
 
 from core.claude_client import claude
 from core.airtable_client import airtable
+# Only what this module actually calls. The old import block carried
+# HANDOFF_KITS, MARKUP_START and MARKUP_FLOOR for months without a single
+# reference — they read as if the escalation threshold lived in core/pricing.py
+# when it was really prose in the prompt, which is its own kind of bug.
 from core.pricing import (
-    get_catalog_text, get_price_list_messages, get_floor_price, get_list_price,
-    max_discount_for_qty, HANDOFF_KITS, MARKUP_START, MARKUP_FLOOR,
+    get_catalog_text, get_price_list_messages, get_price, tier_for_kits,
+    WAREHOUSE_CHINA, WAREHOUSE_US, WAREHOUSES, DEFAULT_WAREHOUSE,
 )
 from core.price_image import get_sku
 from core.shipping import shipping_quote, order_shipping_profile
@@ -72,7 +76,7 @@ RULES:
   warm, light non-native flavor. You may say "dear" occasionally. 1-2 short lines.
 - NEVER reveal there is a separate person/system or that you are relaying. To the customer it
   is just you, continuing the chat.
-- NEVER state a discount percentage. Give prices only as dollar amounts (per kit and/or total).
+- NEVER state a percentage of any kind. Give prices only as dollar amounts (per kit and/or total).
 - Do not invent numbers. Only use prices/terms the boss gave you. If the boss gave a price,
   state it plainly and ask if it works / what's next.
 - If the boss is confirming payment, shipping, or wallet info, convey exactly that.
@@ -85,8 +89,8 @@ def _white_label_table() -> str:
     return table_text()
 
 
-def _build_order_prompt() -> str:
-    catalog = get_catalog_text()
+def _build_order_prompt(warehouse: str = DEFAULT_WAREHOUSE) -> str:
+    catalog = get_catalog_text(warehouse)
     media_catalog = get_media_catalog_text()
     proof_section = (
         "PROOF / LEGITIMACY MEDIA — you can send real photos/videos of our lab and product:\n"
@@ -124,7 +128,12 @@ We are the lab — the manufacturer. We make and ship the product ourselves, dir
 
 WHO WE ARE — say this clearly when relevant:
 - We are Chinese. We are the lab in China. You speak as a Chinese sales rep.
-- We ship everything from China. We do NOT have US-based fulfillment. No US warehouse.
+- We have TWO warehouses: our lab in China, and a smaller US domestic warehouse.
+  * CHINA — the full catalog, every strength, kits of 10 vials only. 4 weeks or less.
+  * US — a short list of popular products, ships overnight, and it is the ONLY place
+    we sell SINGLE VIALS as well as kits. Higher prices; you pay for the speed.
+  Ask which they want early — it decides their prices, their shipping and their wait.
+  If they do not care, assume China (better price, full range) and say so.
 - We rarely do business direct with Americans. If buyer is American, it is fine, but be a
   little reserved — we mostly supply labs and distributors, not US individuals. Do not be
   pushy with American individual buyers; keep it businesslike.
@@ -161,10 +170,13 @@ SPEECH STYLE — IMPORTANT, follow this:
 CRITICAL: Do NOT ask them to qualify themselves. Do NOT ask what type of buyer they are. Do NOT ask for credentials. If they ask for a price list or specific product pricing, give it to them immediately.
 
 SHIPPING (tell them when they ask, or when confirming an order):
-- We ship from China only. No US fulfillment.
-- Standard shipping: $95 flat, 4 weeks or less. (This is the default.)
-  * FREE standard shipping when product total is over $1000 — no $95 fee.
-- Expedited shipping: $235 flat, 10 days or less.
+- FROM CHINA:
+  * Standard: $95 flat, 4 weeks or less. (This is the default.)
+    - FREE standard shipping when product total is over $1000 — no $95 fee.
+  * Expedited: $235 flat, 10 days or less.
+- FROM THE US WAREHOUSE:
+  * $30 flat, overnight. That is the only option — there is no expedited upgrade
+    and NO free shipping threshold. It is $30 whatever the order is worth.
 - Shipping fee is ADDED on top of the product total. Always state shipping fee
   and the final total (product + shipping) when confirming the order.
 - TRACKING: tell the customer they will receive their tracking number within 1-3 days
@@ -185,51 +197,32 @@ PAYMENT:
   for the shipping address. We ship after payment is confirmed.
 
 PRICING RULES:
-- All prices are per kit (10 vials). We sell by the kit only.
-- Start every quote at list price. Never volunteer a discount — only move if they push back.
-- Never reveal our cost or markup structure.
-- Your discount authority is CAPPED BY ORDER SIZE (discount = percent off list price):
-  * Under 25 kits:   max 5% off list
-  * 25 to 49 kits:   max 10% off list
-  * 50 kits or more: max 15% off list (this INCLUDES orders over 100 kits)
-- Move in small increments — only reach the cap if the buyer really pushes. Do not open
-  at the cap.
-- Large orders are normal orders: quote them, negotiate within the cap above, and place
-  them yourself. You do NOT need anyone's approval to sell at or above your cap.
-- If the buyer wants a discount BIGGER than your cap allows (a price below your best capped
-  price) and will not accept your best, THAT is when you escalate — see LARGE ORDER below.
-- NEVER tell the buyer the discount percentage. Do NOT say "5% off", "10% off", "X% discount",
-  or mention any percentage at all. Just give the new lower PRICE as a dollar amount
-  (per kit and/or total). E.g. say "Best I can do is $102.20 per kit" — NOT "5% off, $102.20".
-- NEVER reveal the volume breakpoints or tier thresholds. Do NOT say "under 25", "25 to 49",
-  "50 or more", "100 kits", or name ANY specific quantity where the price changes. Do NOT
-  describe the tiers ("small/medium/large") or list them. If asked what counts as a small or
-  large order, or where the price breaks are, stay vague: e.g. "Depends on volume, dear — the
-  more you take, the better price I can do. Tell me how many kits and I give you a number."
-  Quote the actual price for the quantity they give; never expose the pricing ladder.
-- Retatrutide 10mg is already exceptional market pricing — hold firm, discount only at
-  high volume and never past the cap above.
+- Prices are FIXED. They come off a price sheet. You do not negotiate, you do not
+  discount, and you have no authority to move a price by a single dollar — there is
+  no "best I can do", because the sheet price IS the price.
+- If a buyer pushes for a better price, do not haggle and do not stall. Tell them
+  warmly that the price is the price, and point them at the thing that DOES lower it:
+  ordering more kits. e.g. "That is our price, dear — it is fixed. But at 25 kits it
+  comes down to $X each. Want me to quote that?"
+- CHINA prices are per kit (10 vials) and depend on the TOTAL number of kits on the
+  whole order, added up across every product — not per product:
+  * 1 to 24 kits total    standard price
+  * 25 to 99 kits total   reseller price
+  * 100+ kits total       trading company price
+  So a buyer taking 10 kits of one thing and 15 of another has 25 kits and gets
+  reseller pricing on BOTH lines.
+- YOU MAY SAY THE BREAKPOINTS OUT LOUD. Tell them where the price drops and what it
+  drops to — it is an upsell, not a secret. "You are at 20 kits. Five more and every
+  kit drops from $95 to $66." Quote real numbers from the catalog below.
+- US WAREHOUSE prices are FLAT. One price at any quantity — no 25-kit or 100-kit
+  break. The US warehouse is also the only place we sell single vials; China is
+  full kits only. If a US buyer wants volume pricing, tell them the tiers are on the
+  China side and offer to quote it.
+- Never reveal our cost.
+- A price you cannot find in the catalog below does not exist. Never invent one,
+  never estimate, never carry a price over from the other warehouse.
 
-LARGE ORDER ESCALATION (buyer wants more discount than your cap):
-- You CAN and SHOULD quote and sell large orders (including over 100 kits) yourself. Quote at
-  list, then negotiate down within your cap (max 15% off for 50+ kits) and place the order
-  like normal. Do NOT escalate just because the order is big.
-- ONLY escalate when ALL of these are true:
-  1. The order is large (over 100 kits), AND
-  2. The buyer is demanding a price BELOW your best allowed (capped) price, AND
-  3. They will not accept your best capped price.
-- In that case use action "handoff". Do NOT name a price or percentage. Stall warmly and
-  naturally — tell them for this volume you must confirm a special price with your boss, and
-  you will come right back. Keep it short, 1-2 lines. e.g.
-  "This is big volume, dear. For a price like that I must check with my boss. One moment, I
-  come back to you quick." or "Let me ask my boss if we can do special price for this volume.
-  Give me a moment."
-- Still capture product, spec, and quantity_kits in the JSON. Leave total_price 0 on handoff.
-- After you stall, a human will feed you the approved price and you continue the chat. Until
-  then, do not promise anything specific on price.
-- For orders UNDER 100 kits: never escalate. Just hold firm at your capped best price.
-
-CATALOG (List Price = 6x cost | Floor = 3x cost):
+CATALOG — these are the only prices that exist:
 {catalog}
 
 UNDERSTANDING PRODUCT REQUESTS — read carefully, customers describe peptides loosely:
@@ -299,10 +292,13 @@ FLOW:
 2. If they want prices / the price list / the catalog (even a one-word "prices"),
    use action "send_price_list" with an EMPTY reply_message — no text at all
 3. If they ask about a specific named product, quote the list price per kit and total directly
-4. If they push back on price, negotiate — move in increments, not all at once
-5. When confirming the order, state shipping: standard $95 (FREE if product total
-   over $1000), 4 weeks or less; or expedited $235, 10 days or less. Ask gently
-   "which would you like, dear?"
+4. If they push back on price, do NOT negotiate. The price is fixed. Say so warmly and
+   offer the thing that does move it: more kits (China only) — name the next breakpoint
+   and the price it gets them.
+5. When confirming the order, state shipping. From China: standard $95 (FREE if product
+   total over $1000), 4 weeks or less; or expedited $235, 10 days or less — ask gently
+   "which would you like, dear?" From the US warehouse: $30 flat overnight, no choice
+   to offer and no free threshold.
 6. For payment, warmly say we accept both BTC and USDT and ask which they prefer, dear.
    Do NOT give any wallet address or amount yourself — once they pick a coin and the
    order is agreed, use action "place" and the SYSTEM sends the exact amount and address.
@@ -311,8 +307,14 @@ FLOW:
    coin. Keep reply_message short or empty — the system sends payment instructions next,
    then verifies payment on-chain and collects the shipping address.
 
-NOTE: state the shipping fee and final total (products + shipping) in your replies while
-negotiating, but you do NOT compute the final charge for "place" — the system does.
+NOTE: state the shipping fee and final total (products + shipping) in your replies as you
+work the order, but you do NOT compute the final charge for "place" — the system does.
+
+WAREHOUSE FIELD: set "warehouse" to "china" or "us" the moment the buyer makes it clear
+which one they want — by choosing, by asking for US/domestic stock, by asking for single
+vials (US only), or by asking for something only one of them carries. Set it on EVERY reply
+after that, not just the turn they chose. Leave it null only while you genuinely do not
+know. It decides their prices and their shipping, so getting it wrong costs real money.
 
 Keep replies short and choppy — this is WhatsApp, and you are a warm Chinese lady speaking
 simple English. Use plenty of "dear".
@@ -320,7 +322,7 @@ simple English. Use plenty of "dear".
 PRICES ARE WHOLE DOLLARS — NO DECIMALS. The CATALOG above shows the exact prices the customer
 sees on the price list we send them. Quote those EXACT numbers — they are whole dollars (e.g.
 "$95", never "$94.82"). Per-kit prices, totals, and shipping are all whole dollars. Never quote
-a price with cents. If you negotiate down, stay in whole dollars and never go below the floor.
+a price with cents. There is nothing to negotiate down to — quote the catalog number as it is.
 THINK BEFORE YOU REPLY:
 - The JSON's FIRST field is "thinking" — a short PRIVATE scratchpad. It is NEVER sent to the
   customer. Use it to reason for a moment before you speak, exactly like a real salesperson
@@ -332,9 +334,10 @@ THINK BEFORE YOU REPLY:
 - "reply_message" must read like a real human typed it — natural, warm, never a canned or
   duplicated line. If your reply would be nearly identical to something you already said, change it.
 
-AFTER PAYMENT INSTRUCTIONS WERE SENT: the customer may still negotiate, ask questions, or
-change the order before paying — handle it normally. Discount rules stay the same (never
-beyond your cap; hold firm warmly). If you agree on a CHANGED order or total, use action
+AFTER PAYMENT INSTRUCTIONS WERE SENT: the customer may still ask questions or change the
+order before paying — handle it normally. Prices stay fixed (warmly, no exceptions), but
+note that ADDING kits can cross a breakpoint and lower every line — say so if it applies.
+If you agree on a CHANGED order or total, use action
 "place" again — the system voids the old payment instructions and sends fresh ones with the
 new amount. If nothing changes, remind them warmly of the existing total and that you're
 ready when they are; do NOT invent new amounts in text without action "place".
@@ -342,7 +345,8 @@ ready when they are; do NOT invent new amounts in text without action "place".
 Always end with a JSON block (fill "thinking" FIRST, then the rest):
 {{
   "thinking": "private reasoning — never shown to the customer",
-  "action": "collect" | "confirm" | "place" | "send_price_list" | "send_media" | "handoff" | "invalid",
+  "action": "collect" | "confirm" | "place" | "send_price_list" | "send_media" | "invalid",
+  "warehouse": "china" | "us" | null,
   "line_items": [{{"product": "...", "spec": "...", "quantity_kits": 0, "unit_price": 0}}],
   "shipping": "standard" | "expedited" | null,
   "coin": "USDT" | "BTC" | null,
@@ -387,10 +391,31 @@ _lead_stage: dict[str, str] = {}  # phone -> "qualifying"|"ordering"|"manual"|"a
 # Orders awaiting crypto payment. phone -> {order_id, coin, expected_amount, since, charge_usd}
 _pending_payments: dict[str, dict] = {}
 
-# Prospects (>100 kits) currently under operator control. phone -> details dict.
-# While a prospect is in here their stage is "manual": the auto-agent will not set
-# prices; the operator drives the conversation via relay.
+# Prospects currently under operator control. phone -> details dict. While a
+# prospect is in here their stage is "manual": the auto-agent will not set
+# prices; the operator drives the conversation via relay. Since 2026-09-03 the
+# only thing that lands here is a line we cannot PRICE — there is no
+# large-order escalation any more, because there is no discount to escalate for.
 _pending_handoffs: dict[str, dict] = {}
+
+# Which warehouse each buyer is shopping. phone -> "china" | "us".
+#
+# In memory only, like every dict above, and therefore wiped by a deploy — but
+# unlike the others this one is also written onto the ORDER record. A buyer who
+# chose the US warehouse and then sat through a redeploy must not silently
+# revert to China prices, which are lower and quoted from stock four weeks away.
+# Lily re-derives it from the recovered transcript on her next reply (the
+# WAREHOUSE FIELD rule in the prompt), which is the real recovery path.
+_warehouse: dict[str, str] = {}
+
+
+def get_warehouse(phone: str) -> str:
+    return _warehouse.get(phone, DEFAULT_WAREHOUSE)
+
+
+def set_warehouse(phone: str, warehouse: str) -> None:
+    if warehouse in WAREHOUSES:
+        _warehouse[phone] = warehouse
 
 
 # ── Order / payment helpers ──────────────────────────────────────────────────
@@ -545,30 +570,47 @@ _SHIP_ASKS = {
 }
 
 
-def _validate_line_items(line_items: list[dict]) -> tuple[list[dict], bool, list[dict]]:
-    """Build clean line items; clamp any unit price up to the floor/cap minimum.
+def _validate_line_items(line_items: list[dict],
+                         warehouse: str = DEFAULT_WAREHOUSE
+                         ) -> tuple[list[dict], bool, list[dict]]:
+    """Build clean line items and price every one of them from the sheet.
 
-    Returns (items, clamped, unpriced):
-      items    — validated lines, safe to sell
-      clamped  — True if any price was raised to the allowed minimum
-      unpriced — lines whose product/spec could not be resolved to a price AT ALL
+    Returns (items, corrected, unpriced):
+      items     — validated lines, safe to sell
+      corrected — True if any price Lily quoted did not match the sheet
+      unpriced  — lines we cannot price at this warehouse AT ALL
 
-    FAIL CLOSED (2026-08-30). An unresolvable line used to fall straight through
-    this function: the clamp below is guarded by `if list_pk is not None`, so a
-    line with no list price skipped the floor check, the discount cap, AND the
-    `if unit <= 0: unit = list_pk` backfill together. A quote below cost passed
-    unchanged, and a line with no unit_price priced at $0.00 and shipped free.
+    TWO PASSES, AND THAT IS THE POINT (2026-09-03). The tier is decided by the
+    TOTAL kits on the order, so the total has to be known before any line can be
+    priced. The negotiation-era version looked the discount cap up per line with
+    that line's own quantity — under fixed tiers that same shape would quote a
+    25-kit order made of five 5-kit lines at the standard rate instead of the
+    reseller rate, overcharging exactly the buyer who spread their order across
+    products. So: sum first, price second.
 
-    That was not a hypothetical: 3.9% of plausible product/spec spellings drawn
-    from our own live price sheet resolved to None, across 8 SKUs and via two
-    unrelated root causes (name drift, and DSIP's non-standard spec format).
-    Lily writes these strings freely, so the input space cannot be enumerated —
-    the only safe move is to refuse the line and let a human price it.
+    THE PRICE IS NOT NEGOTIABLE, INCLUDING BY LILY. Whatever `unit_price` the
+    model produced is discarded and replaced with the sheet price. It is kept
+    only to notice a mismatch and log it — a model that quotes $88 for a $95 kit
+    has told the customer something we are about to contradict, and an operator
+    wants to know. There is no floor and no cap any more because there is no
+    range: one product at one warehouse at one order size has exactly one price.
 
-    Unpriced lines are now EXCLUDED from `items` so they can never reach an
-    order; the caller escalates them to manual mode.
+    FAIL CLOSED (2026-08-30, still true). An unresolvable line used to fall
+    straight through and ship at $0.00. 3.9% of plausible product/spec spellings
+    drawn from our own price sheet resolved to None, across 8 SKUs and two
+    unrelated root causes. Lily writes these strings freely, so the input space
+    cannot be enumerated — the only safe move is to refuse the line and let a
+    human price it. Unpriced lines are EXCLUDED from `items` so they can never
+    reach an order; the caller escalates them to manual mode.
+
+    A US buyer asking for a China-only product lands there too: 121 of our 151
+    SKUs are not stocked in the US, `get_price` returns None for them, and the
+    line is refused rather than silently sold at the China price.
     """
-    items, clamped, unpriced = [], False, []
+    warehouse = warehouse if warehouse in WAREHOUSES else DEFAULT_WAREHOUSE
+
+    # Pass 1 — clean the lines and total the kits.
+    clean: list[dict] = []
     for li in line_items or []:
         product = (li.get("product") or "").strip()
         spec = (li.get("spec") or "").strip()
@@ -578,39 +620,39 @@ def _validate_line_items(line_items: list[dict]) -> tuple[list[dict], bool, list
             kits = 0
         if not product or kits <= 0:
             continue
-        list_pk = get_list_price(product, spec)
-        floor_pk = get_floor_price(product, spec)
         try:
-            unit = float(li.get("unit_price") or 0)
+            quoted = float(li.get("unit_price") or 0)
         except (TypeError, ValueError):
-            unit = 0.0
-        if list_pk is None:
-            # Cannot resolve a price for this product/spec. Refuse the line rather
-            # than letting it through unguarded — see the docstring. Never sell
-            # what we cannot price.
-            print(f"[Guardrail] UNPRICED line refused: {product!r} spec={spec!r} kits={kits}")
+            quoted = 0.0
+        clean.append({"product": product, "spec": spec, "kits": kits, "quoted": quoted})
+
+    total_kits = sum(c["kits"] for c in clean)
+
+    # Pass 2 — price every line at the tier that total earns.
+    items, corrected, unpriced = [], False, []
+    for c in clean:
+        product, spec, kits = c["product"], c["spec"], c["kits"]
+        sheet_pk = get_price(product, spec, total_kits, warehouse)
+        if sheet_pk is None:
+            print(f"[Guardrail] UNPRICED line refused: {product!r} spec={spec!r} "
+                  f"kits={kits} warehouse={warehouse}")
             unpriced.append({"product": product, "spec": spec, "kits": kits})
             continue
-        if unit <= 0:
-            unit = list_pk
-        cap = max_discount_for_qty(kits)
-        # Discount bound rounds DOWN to the whole dollar Claude (and any human)
-        # naturally quotes: 5% off $95 = $90.25 → $90 is allowed. Rounding this
-        # UP made the validator fight Lily's own quoted price by $1 and loop a
-        # canned override at a customer (2026-08-01). Hard cost floor still
-        # rounds up — never sell below 3x cost.
-        min_pk = max(math.ceil(floor_pk or 0), math.floor(list_pk * (1 - cap)))
-        if unit < min_pk - 0.001:
-            unit = float(min_pk)
-            clamped = True
-        unit = round(unit, 2)
+        if c["quoted"] > 0 and abs(c["quoted"] - sheet_pk) >= 0.01:
+            print(f"[Guardrail] price corrected: {product!r} {spec!r} "
+                  f"quoted ${c['quoted']:.2f} -> sheet ${sheet_pk:.2f} "
+                  f"({warehouse}, {total_kits} kits, {tier_for_kits(total_kits)})")
+            corrected = True
+        unit = round(float(sheet_pk), 2)
         items.append({"product": product, "spec": spec, "kits": kits, "unit_price": unit,
-                      "line_total": round(unit * kits, 2), "sku": get_sku(product, spec)})
-    return items, clamped, unpriced
+                      "line_total": round(unit * kits, 2), "sku": get_sku(product, spec),
+                      "warehouse": warehouse})
+    return items, corrected, unpriced
 
 
 def _shipping_fee(shipping: str, product_subtotal: float,
-                  items: list[dict] | None = None) -> int:
+                  items: list[dict] | None = None,
+                  warehouse: str = DEFAULT_WAREHOUSE) -> int:
     """The shipping charge the customer sees.
 
     Delegates to core.shipping so there is ONE implementation of the rule, now
@@ -619,7 +661,7 @@ def _shipping_fee(shipping: str, product_subtotal: float,
     until Jordan sets a threshold, because this number is quoted to real buyers.
     Passing `items` costs nothing today and is what the guard will read.
     """
-    return shipping_quote(shipping, product_subtotal, items)
+    return shipping_quote(shipping, product_subtotal, items, warehouse)
 
 
 # Cost guardrail: the whole history is re-sent to Claude on every reply, so an
@@ -1187,6 +1229,7 @@ def handle_inbound(from_phone: str, body: str, name: str = "", media: list | Non
         _pending_deals.pop(from_phone, None)
         _last_outbound.pop(from_phone, None)
         _sent_media.pop(from_phone, None)
+        _warehouse.pop(from_phone, None)
         try:
             existing = airtable.find_lead_by_phone(from_phone)
             if existing:
@@ -1557,7 +1600,7 @@ def handle_inbound(from_phone: str, body: str, name: str = "", media: list | Non
     # still letting Claude reason about specific products and ambiguous asks.
     if _is_price_list_request(body):
         try:
-            _send_price_list(from_phone)
+            _send_price_list(from_phone, get_warehouse(from_phone))
             print(f"[MessagingAgent] Fast-path price list send to {from_phone}")
         except Exception as e:
             print(f"[MessagingAgent] Fast-path _send_price_list crashed: {e!r}")
@@ -1602,6 +1645,15 @@ def _handle_qualifying(phone: str, conversation: list[dict], existing_lead: dict
     buyer_type = action_data.get("buyer_type")
     notes = action_data.get("notes", "")
 
+    # A warehouse the model reports is sticky from here on. Only ever accept a
+    # value we know: an unrecognised string must not become a KeyError two
+    # functions later, and must not silently blank an earlier valid choice.
+    chosen = (action_data.get("warehouse") or "").strip().lower()
+    if chosen in WAREHOUSES and chosen != warehouse:
+        print(f"[MessagingAgent] {phone} warehouse -> {chosen}")
+        set_warehouse(phone, chosen)
+        warehouse = chosen
+
     if action == "qualify":
         lead = _upsert_lead(phone, name, buyer_type, notes, existing_lead, "Qualified")
         set_stage(phone, "ordering")
@@ -1624,10 +1676,15 @@ def _handle_ordering(phone: str, conversation: list[dict], existing_lead: dict |
 
     buyer_context = f"\n\nBuyer type: {buyer_type}" if buyer_type else ""
 
+    # Which warehouse is this buyer shopping? Held per phone; the model both reads
+    # it (the prompt is built from it, so the catalog it sees is that warehouse's)
+    # and updates it (the "warehouse" field, when the buyer makes a choice).
+    warehouse = get_warehouse(phone)
+
     # Generous ceiling: adaptive thinking tokens + a long multi-item order JSON must
     # both fit, or the line_items list gets truncated and products silently drop.
     response = claude.create(
-        system=_build_order_prompt() + buyer_context,
+        system=_build_order_prompt(warehouse) + buyer_context,
         messages=conversation,
         max_tokens=2048,
     )
@@ -1644,7 +1701,7 @@ def _handle_ordering(phone: str, conversation: list[dict], existing_lead: dict |
     # Full catalog requested — send the spreadsheet only, no text
     if action == "send_price_list":
         try:
-            _send_price_list(phone)
+            _send_price_list(phone, warehouse)
             print(f"[MessagingAgent] Claude triggered price list send to {phone}")
         except Exception as e:
             print(f"[MessagingAgent] _send_price_list crashed: {e!r}")
@@ -1670,25 +1727,15 @@ def _handle_ordering(phone: str, conversation: list[dict], existing_lead: dict |
         save_conversation(phone, conversation)
         return _MEDIA_SENT
 
-    # Large-order escalation → operator-controlled relay
-    if action == "handoff":
-        li = line_items[0] if line_items else {}
-        _enter_manual_mode(phone, li.get("product", ""), li.get("spec", ""),
-                           li.get("quantity_kits", 0), conversation)
-        return reply or ("This is big volume, dear. For a price like that I must check with my "
-                         "boss. One moment — I come back to you quick.")
-
-    # Pricing guardrail: never let a line price fall below the floor/cap minimum.
-    # When Claude quotes too low, do NOT override with a canned line (that looped
-    # a robotic contradiction at a live customer) — tell Claude its true minimums
-    # via an internal note and let it re-state the offer naturally, in-voice,
-    # consistent with what the customer has already been told.
+    # Fail closed on anything we cannot price. This is the ONLY route into manual
+    # mode now: the large-order discount escalation was removed on 2026-09-03
+    # along with the rest of negotiation, and Lily quoting below a floor is no
+    # longer possible because she does not set the price at all — the sheet does
+    # (see _validate_line_items). What is left is the HANDOFF §29 case: a product
+    # or spelling we could not resolve, or a China-only SKU asked for at the US
+    # warehouse. Both get a warm stall and a human, never a guessed price.
     if action in ("place", "confirm"):
-        items, clamped, unpriced = _validate_line_items(line_items)
-        # Fail closed: a line we cannot price must never reach an order. Hand the
-        # whole conversation to a human via the SAME manual-mode path the large-order
-        # handoff uses, so the buyer gets a warm stall instead of an error — and so
-        # nobody can be quoted $0 for a product whose name we failed to resolve.
+        items, corrected, unpriced = _validate_line_items(line_items, warehouse)
         if unpriced:
             bad = "; ".join(f"{u['kits']}x {u['product']} {u['spec']}".strip() for u in unpriced)
             print(f"[Guardrail] UNPRICED line(s) for {phone} — escalating to manual mode: {bad}")
@@ -1696,34 +1743,24 @@ def _handle_ordering(phone: str, conversation: list[dict], existing_lead: dict |
             _enter_manual_mode(phone, u0["product"], u0["spec"], u0["kits"], conversation)
             return ("Let me confirm the exact price on this one with my boss, dear — "
                     "one moment, I come right back to you.")
-        if clamped and items:
-            mins = "; ".join(f"{i['product']} {i['spec']}: ${int(i['unit_price'])}/kit"
-                             for i in items)
-            print(f"[Guardrail] Below-minimum quote for {phone} — regenerating with correction")
-            note = (f"(INTERNAL SYSTEM NOTE — not from the customer, never mention it. The price "
-                    f"you proposed is below your true allowed minimum. Your ABSOLUTE per-kit "
-                    f"minimums for this order: {mins}. Recompute the total with these minimums. "
-                    f"If you already told the customer a lower number, apologize warmly for the "
-                    f"mix-up ONCE and give the corrected number clearly; do not flip-flop again. "
-                    f"Reply with action \"collect\" and a natural reply_message — do NOT place.)")
-            try:
-                r2 = claude.create(system=_build_order_prompt() + buyer_context,
-                                   messages=conversation + [{"role": "user", "content": note}],
-                                   max_tokens=2048)
-                p2 = _parse_json(_extract_text(r2)) or {}
-                fixed = (p2.get("reply_message") or "").strip()
-                if fixed:
-                    return fixed
-            except Exception as e:
-                print(f"[Guardrail] correction regen failed: {e!r}")
+        if corrected and items:
+            # Lily named a price the sheet does not agree with. The order is
+            # already built at the SHEET price — nothing unsafe can ship — but
+            # the customer has been told a different number, so say the real one
+            # plainly rather than letting the payment request contradict the chat.
+            # No second model call: there is nothing to re-derive, only one
+            # correct answer to state. (The old version re-prompted Claude to
+            # renegotiate in-voice; with fixed prices that just risks a fresh
+            # wrong number.)
             quoted = "; ".join(f"{i['kits']}x {i['product']} {i['spec']}".strip() +
                                f" at ${int(i['unit_price'])}/kit" for i in items)
-            return (f"So sorry for the mix-up, dear! 🙏 The very best I can truly do is {quoted}. "
-                    f"Shall we go ahead?")
+            print(f"[Guardrail] Sheet price differs from quote for {phone} — restating")
+            return (f"Let me give you the exact numbers, dear 🙏 — {quoted}. "
+                    f"That is our set price. Shall we go ahead?")
 
     # Finalize → create a pending order (awaiting payment) and send payment instructions
     if action == "place":
-        items, _, unpriced = _validate_line_items(line_items)
+        items, _, unpriced = _validate_line_items(line_items, warehouse)
         # Defence in depth. The ("place","confirm") block above already escalates
         # and returns, so this should be unreachable — but never build an order
         # from a partial basket if it ever is.
@@ -1738,14 +1775,14 @@ def _handle_ordering(phone: str, conversation: list[dict], existing_lead: dict |
         if coin not in ("USDT", "BTC"):
             return "Almost there, dear! We accept both BTC and USDT — which would you prefer to use?"
         subtotal = sum(i["line_total"] for i in items)
-        total_usd = round(subtotal + _shipping_fee(shipping, subtotal, items), 2)
+        total_usd = round(subtotal + _shipping_fee(shipping, subtotal, items, warehouse), 2)
 
         # Internal-only freight visibility. The customer's quote above is
         # untouched; this is so a money-losing order is VISIBLE at the moment it
         # is taken rather than discovered on a courier invoice weeks later. Never
         # let it break an order — it is telemetry, not a guard.
         try:
-            prof = order_shipping_profile(items, shipping, subtotal)
+            prof = order_shipping_profile(items, shipping, subtotal, warehouse)
             print(f"[Shipping] {phone} {prof['product_kg']}kg in {prof['packages']} pkg(s), "
                   f"charged ${prof['charged_usd']}, ${prof['value_per_kg']}/kg")
             if prof["packages"] >= 4 and prof["charged_usd"] == 0:
@@ -1793,7 +1830,8 @@ def _handle_ordering(phone: str, conversation: list[dict], existing_lead: dict |
         ref = _order_ref()
         try:
             order = airtable.create_pending_order(lead_id, phone, items, charge_usd, coin,
-                                                  expected, ref, airtable.week_tag())
+                                                  expected, ref, airtable.week_tag(),
+                                                  warehouse)
         except Exception as e:
             print(f"[MessagingAgent] pending order create failed: {e!r}")
             return "Sorry dear, a small hiccup setting up your order — please try again in a moment."
@@ -1895,25 +1933,40 @@ _BASE_URL = "https://peptide-agents-production.up.railway.app"
 _CN_XLSX_FILENAME = "北线集团研究肽价格表.xlsx"
 PRICE_LIST_XLSX_URL = f"{_BASE_URL}/{_urlquote(_CN_XLSX_FILENAME)}"
 
+# The US warehouse gets its OWN sheet — a different, much shorter catalog at
+# different prices, with a vial column China does not have. Sending the China
+# sheet to a US buyer would quote them 121 products we cannot ship from there,
+# at prices they will not be charged. English filename: this one is not going to
+# a Chinese-speaking buyer.
+_US_XLSX_FILENAME = "Northline_US_Warehouse_Price_List.xlsx"
+PRICE_LIST_US_XLSX_URL = f"{_BASE_URL}/{_urlquote(_US_XLSX_FILENAME)}"
 
-def _send_price_list(to: str) -> None:
+PRICE_LIST_URLS = {
+    WAREHOUSE_CHINA: PRICE_LIST_XLSX_URL,
+    WAREHOUSE_US: PRICE_LIST_US_XLSX_URL,
+}
+
+
+def _send_price_list(to: str, warehouse: str = DEFAULT_WAREHOUSE) -> None:
     """
     Send the bilingual XLSX price list as a WhatsApp document attachment —
     no accompanying text, just the spreadsheet file. Recipients open it in
     Excel / Numbers / Sheets. Falls back to text only if the attachment fails.
     """
+    warehouse = warehouse if warehouse in WAREHOUSES else DEFAULT_WAREHOUSE
+    url = PRICE_LIST_URLS[warehouse]
     from_number = settings.twilio_whatsapp_from if "whatsapp" in to else settings.twilio_phone_number
-    print(f"[PriceList] Sending XLSX (no text) to {to!r} from {from_number!r} — {PRICE_LIST_XLSX_URL}")
+    print(f"[PriceList] Sending {warehouse} XLSX (no text) to {to!r} from {from_number!r} — {url}")
     try:
         msg = twilio_client.messages.create(
             from_=from_number,
             to=to,
-            media_url=[PRICE_LIST_XLSX_URL],
+            media_url=[url],
         )
         print(f"[PriceList] Sent OK: SID={msg.sid} status={msg.status}")
     except Exception as e:
         print(f"[PriceList] XLSX send failed: {e!r} — sending text fallback")
-        _send_text_price_list(from_number, to)
+        _send_text_price_list(from_number, to, warehouse)
 
 
 def _send_proof_media(to: str, key: str, caption: str = "") -> bool:
@@ -1939,9 +1992,10 @@ def _send_proof_media(to: str, key: str, caption: str = "") -> bool:
         return False
 
 
-def _send_text_price_list(from_number: str, to: str) -> None:
+def _send_text_price_list(from_number: str, to: str,
+                          warehouse: str = DEFAULT_WAREHOUSE) -> None:
     """Last-resort fallback: send price list as plain-text messages."""
-    fallback_msgs = get_price_list_messages()
+    fallback_msgs = get_price_list_messages(warehouse)
     for m in fallback_msgs:
         try:
             twilio_client.messages.create(body=m, from_=from_number, to=to)

@@ -69,23 +69,41 @@ def test_every_sheet_row_prices():
     assert not broken, f"{len(broken)} sheet SKUs do not price: {broken}"
 
 
-def test_every_sheet_row_has_a_floor():
-    """A line with no floor can be discounted below cost."""
-    broken = [(sku, product, spec) for sku, product, spec, _ in SHEET_ROWS
-              if pricing.get_floor_price(product, spec) is None]
-    assert not broken, f"{len(broken)} sheet SKUs have no floor price: {broken}"
+def test_every_sheet_row_prices_at_every_tier():
+    """A SKU that prices at 1 kit but not at 25 or 100 is worse than one that
+    never prices: the quote works right up until the buyer gets big."""
+    broken = []
+    for sku, product, spec, _ in SHEET_ROWS:
+        for kits in (1, 25, 100):
+            if pricing.get_price(product, spec, kits) is None:
+                broken.append((sku, product, spec, kits))
+    assert not broken, f"{len(broken)} sheet SKU/tier combinations do not price: {broken}"
 
 
-def test_no_sheet_price_is_below_its_own_floor():
-    """The sheet must never sell under the 3x cost floor the guard enforces.
-    This is what flagged the stale Sermorelin Acetate rows: pricing off them put
-    SMO5 at 2.4x cost."""
+def test_no_tier_price_is_below_cost():
+    """The 3x floor is gone (there is nothing left to negotiate), so the only
+    remaining question is whether the SHEET itself sells at a loss. It is asked
+    at the deepest tier, because that is the one that would."""
     under = []
-    for sku, product, spec, sheet_price in SHEET_ROWS:
-        floor = pricing.get_floor_price(product, spec)
-        if floor is not None and sheet_price < math.ceil(floor) - 0.005:
-            under.append((sku, product, spec, sheet_price, floor))
-    assert not under, f"sheet price below floor: {under}"
+    for sku, product, spec, _ in SHEET_ROWS:
+        cost = pricing.cost_of(product, spec)
+        price = pricing.get_price(product, spec, 100)
+        if cost is not None and price is not None and price < cost:
+            under.append((sku, product, spec, price, cost))
+    assert not under, f"trading-tier price below cost: {under}"
+
+
+def test_tiers_never_go_up_with_volume():
+    """Buying more must never cost more per kit. A transposed column in the
+    generated sheet would show up here and nowhere else."""
+    wrong = []
+    for sku, product, spec, _ in SHEET_ROWS:
+        p1 = pricing.get_price(product, spec, 1)
+        p25 = pricing.get_price(product, spec, 25)
+        p100 = pricing.get_price(product, spec, 100)
+        if not (p1 >= p25 >= p100):
+            wrong.append((sku, product, spec, p1, p25, p100))
+    assert not wrong, f"tier prices not monotonic: {wrong}"
 
 
 # ── 3. Spelling robustness — the class of bug, not the five instances ────────
@@ -115,8 +133,8 @@ def test_both_spellings_resolve_identically(cost_name, sheet_name, spec, sku):
     for name in (cost_name, sheet_name):
         assert pricing.get_list_price(name, spec) is not None, \
             f"{name!r} {spec} does not price"
-        assert pricing.get_floor_price(name, spec) is not None, \
-            f"{name!r} {spec} has no floor"
+        assert pricing.get_price(name, spec, 100) is not None, \
+            f"{name!r} {spec} does not price at the trading tier"
         assert price_image.get_sku(name, spec) == sku, \
             f"{name!r} {spec} -> SKU {price_image.get_sku(name, spec)!r}, expected {sku!r}"
     assert pricing.get_list_price(cost_name, spec) == pricing.get_list_price(sheet_name, spec)
@@ -142,10 +160,16 @@ def test_sermorelin_has_one_cost_basis():
     assert names == {"Sermorelin"}, f"expected only 'Sermorelin', found {names}"
 
 
-@pytest.mark.parametrize("spec,expected", [("5mg", 90.0), ("10mg", 119.0)])
+# $90/$119 until 2026-09-03; Daniel's new sheet moved them to $105/$135 and ALSO
+# listed "Sermorelin Acetate" a second time, 75 rows lower, at $255/$455. Jordan
+# took the lower row (2026-09-03) and the duplicate block was deleted from the
+# source workbooks. Sermorelin acetate IS sermorelin, so the alias must still
+# collapse the two names onto this one price — which is the whole point of this
+# test and the reason the duplicate was caught at all.
+@pytest.mark.parametrize("spec,expected", [("5mg", 105.0), ("10mg", 135.0)])
 def test_sermorelin_acetate_resolves_to_the_sheet_price(spec, expected):
-    """The removed name still resolves — via the alias — and now to the price the
-    customer sheet has always shown, not the stale $224/$398."""
+    """The removed name still resolves — via the alias — to the single sheet
+    price, never to a second, higher row for the same product."""
     for name in ("Sermorelin", "Sermorelin Acetate"):
         assert pricing.get_list_price(name, spec) == expected, \
             f"{name} {spec} -> {pricing.get_list_price(name, spec)}, expected {expected}"
