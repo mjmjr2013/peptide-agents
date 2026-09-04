@@ -228,7 +228,8 @@ Railway IDs — project `c3856be2-a3fa-4184-a096-7f8f36f6e762`, service `4336f9e
 
 ## 12. Credentials & IDs (secrets NOT stored here)
 - Twilio Account SID + Auth Token (master cred, also used by app) — both from Console → Account Info; **don't rotate** the auth token.
-- Railway token — generate fresh per session, delete after.
+- Railway token — **persistent in `.env`, do NOT delete** (Jordan, 2026-09-03; supersedes the
+  old generate-fresh-per-session rule). Account-scoped, so it is not limited to this project.
 - GitHub PAT — embedded in local git remote (push works), **should be rotated**.
 - Airtable PAT `pat…` (in Railway `AIRTABLE_API_KEY`); base `apprMJI8obXHOLvJU`.
 - WABA id `1010468724997939`; HK regulatory bundle `BUad64de52410298f0c0252f7c651b9534`.
@@ -1819,6 +1820,14 @@ was prices; this is artwork). The lesson §31 applied to prices — make the sec
 first rather than restate it — has not been applied to the label checks. Left alone for now because
 the assertion is cheap and correct, but if a third exemption ever appears, `labels_orphaned()`
 should become the only implementation.
+
+### The Railway token is now persistent
+
+§12's "generate fresh per session, delete after" rule is **reversed** as of today. Jordan wants the
+`RAILWAY_TOKEN` in `.env` to survive so any session can force-deploy without him minting one first;
+he was told it is account-scoped rather than project-scoped and kept it regardless. `.env` is
+`.gitignore` line 1 and untracked, so the exposure is local-disk only. CLAUDE.md and §12 both say
+this now — do not "clean it up" on sight.
 
 **Not verified by me:** the WhatsApp round trip. Send yourself "prices" and confirm you get the China
 sheet with the new numbers, and that asking for US stock switches it — that is the one thing on this

@@ -88,8 +88,14 @@ substitutes the sheet's. If you find yourself reintroducing a range, check with 
 
 ## Secrets
 
-No tokens live in this repo. `.env` is gitignored. Railway tokens are generated per session and
-**deleted afterward** (HANDOFF §12). Never commit a token, and never echo one into terminal output.
+No tokens live in this repo. `.env` is gitignored (line 1) and untracked. Never commit a token, and
+never echo one into terminal output.
+
+**The `RAILWAY_TOKEN` in `.env` is PERSISTENT — do not delete it.** Jordan's call, 2026-09-03: he
+wants it to survive so any session can force-deploy without him minting one first. This reverses the
+old "generate fresh per session, delete after" rule, which is why HANDOFF §12 no longer says that.
+It is account-scoped, so it reaches every project on his Railway account, not just this one — he was
+told and kept it anyway. Use it; do not remove it; do not commit it.
 
 ## Layout
 
