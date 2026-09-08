@@ -62,6 +62,19 @@ def run_report_scheduler():
             if now.hour == daily_hour and last_manifest_day != day:
                 print(f"[Main/Reports] daily manifest {day}:", run_daily_manifest())
                 last_manifest_day = day
+                # Pay the warehouse rep for the boxes he was just asked to pack
+                # (HANDOFF §32). Deliberately INSIDE the once-a-day guard and
+                # immediately after the manifest, so the instructions and the
+                # money land together. `last_manifest_day` is set FIRST: if the
+                # payout throws, the manifest is not re-sent on the next tick.
+                # The payout never raises (it emails instead), but a scheduler
+                # thread that dies takes the canary and paywatch down with it.
+                try:
+                    from agents.warehouse_payout import run_daily_warehouse_payout
+                    print(f"[Main/Payout] warehouse payout {day}:",
+                          run_daily_warehouse_payout())
+                except Exception as e:
+                    print(f"[Main/Payout] FAILED {day}: {e!r}")
             if now.weekday() == 6 and now.hour == 0 and last_bulk_week != day:  # Sunday 00:xx
                 print(f"[Main/Reports] weekly supplier bulk {day}:", run_supplier_bulk())
                 last_bulk_week = day

@@ -1839,3 +1839,174 @@ Unchanged from §31's list: `LIR30`'s 20mg/30mg conflict, `SLU-PP-332` vs `-322`
 `SM100`, `TR120`, whether `RT80`/`TR80`/sterile water come back, and Daniel's monthly-commitment
 volume discounts (deliberately not implemented).
 
+
+## 32. Automatic warehouse payouts to Jason on Tron (2026-09-04) — BUILT, NOT DEPLOYED
+
+Jordan: *"a system that will make automatic crypto payments to our warehouse rep, Jason…
+analyze the composition of the order, figure out what the weight will be using the weight
+limit logic for how many packages, and then based on the weight and the per box flat fee,
+automatically pay that amount to Jason's wallet via Tron."*
+
+**$12 per box PLUS $15.90 per kg of gross weight, nightly, in USDT-TRC20, sent immediately
+after the daily manifest email.**
+
+Two components, and they are not interchangeable: the box fee pays for packing a parcel,
+the weight fee pays for what is in it. GROSS weight — Jordan's *"assume box itself is
+350g"* means the empty box is paid for too, one tare per package. That number is NOT
+copied into the fee module: it is `catalog.PACKAGE_TARE_G`, already folded into each
+package's `gross_g` by the shipping split, so the packing, the manifest and Jason's pay
+move together if it ever changes.
+
+### This is the first code in the repo that can spend money
+
+`core/crypto_verify.py` opens with *"Never holds keys, never moves funds — it only reads
+public ledgers, so it cannot spend anything."* That was true of the whole repo until now.
+`core/tron_payout.py` is the single exception and must stay the only one: if something
+else needs to send funds, call it, do not sign a transaction anywhere else.
+
+A Tron transfer is final. No chargeback, no reversal. Every design decision below is
+downstream of that one fact.
+
+### The three modules, and why they are three
+
+| | |
+|---|---|
+| `core/warehouse_fees.py` | Order → boxes → dollars. No key, no network, no Airtable. Pure and fully testable. |
+| `core/tron_payout.py` | The only key holder. Refuses far more than it sends. |
+| `agents/warehouse_payout.py` | Decides *when*. Claims, sends, records, emails. |
+
+**The box count is not computed here.** It is `shipping.split_packages()` — the same call
+that builds Jason's manifest. That is the entire point: if the payout had its own count,
+the manifest could tell him to pack three boxes while the payout paid him for two, and the
+only way to discover it would be him complaining. A parametrised test asserts the two agree
+on every mix.
+
+**Not an LLM agent, despite living in `agents/`.** The amount owed is arithmetic. A model
+that is right 99% of the time wires a wrong number to an irreversible address once every
+hundred nights.
+
+### What gets paid, and when
+
+Selection is a **state, not a date window**: paid, non-legacy, `warehouse_fee_paid` unticked,
+`paid_at` on or after `WAREHOUSE_FEE_START_DATE`. In steady state that is exactly the day's
+new orders. It is also correct after a missed night, a Railway restart mid-batch, or an
+order paid at 23:59 — a date window would drop those silently, and nobody audits a payment
+that never happened.
+
+⚠️ **Payment fires when the CUSTOMER pays, not when the box ships.** That is what Jordan
+asked for (money and manifest on the same nightly beat) and it means Jason is paid up front.
+An order that is paid and then never ships — address never supplied, customer vanishes,
+refund — has already been paid for and there is no un-pay. Closing that means adding
+`tracking_sent` to the query in `get_orders_awaiting_warehouse_fee`; worth doing if
+never-shipped orders turn out to be more than rare.
+
+### Airtable — FOUR FIELDS MUST BE ADDED BY HAND
+
+On **Orders**:
+
+| field | type |
+|---|---|
+| `warehouse_fee_paid` | checkbox |
+| `warehouse_fee_usd` | number, 2 dp |
+| `warehouse_boxes` | number, integer |
+| `warehouse_fee_tx` | single line text |
+
+Unlike the `warehouse` field in §31, this does **not** degrade gracefully — it fails closed.
+Degrading there loses a label on a report; degrading here loses the record of who has been
+paid, and the next night pays them all again.
+
+### There is no approval step
+
+Jordan's explicit call, having been told a transfer is irreversible. So the protection is
+structural:
+
+1. **Claim before send.** A crash between the two underpays (recoverable) rather than
+   double-pays (not). Always fail toward not paying.
+2. **Timestamped run token.** Each order is re-read fresh before claiming and skipped if it
+   is already claimed or already carries a real hash; after claiming, the batch is re-read
+   and only orders still holding this run's token are paid.
+3. **Unpriceable orders are excluded**, never paid at a guessed box count.
+4. **One aggregate transfer a night** — one hash on every order in the batch.
+5. **`PAYOUT_MAX_USD`** refuses an absurd night. Bug catcher, not permission gate. Its error
+   message deliberately does *not* say "raise the ceiling" — the usual cause is a bad start
+   date sweeping the back catalogue, and an operator told to raise the limit will do it.
+6. **`PAYOUT_DRY_RUN` defaults ON**, and a dry run **claims nothing**.
+
+### ⚠️ Residual risk: two containers
+
+Airtable has no compare-and-swap. The token scheme plus the fresh per-record read makes the
+window narrow, but a second container whose queue read predates this run's claims by more
+than `CLAIM_SETTLE_SECONDS` (10s) can still pay the same night twice. That means a Railway
+rolling deploy landing within seconds of `DAILY_MANIFEST_HOUR`, or replica count > 1.
+
+**Keep Railway at one replica.** That, not this code, is what closes it. A proper fix is a
+single lock record claimed once per night instead of N order records.
+
+### Bugs found by review before this ever ran
+
+An adversarial pass found ten; six would have cost money. Recording them because each is a
+trap someone will otherwise re-lay:
+
+- **A broadcast timeout is not a failed broadcast.** TronGrid returning 504 after the node
+  accepted the transfer was classified "nothing sent", releasing every claim and paying the
+  whole night again tomorrow. The boundary is now *did the node answer* — anything from
+  `tronpy.exceptions` plus connect-phase failures is `PayoutError`; everything else,
+  `ReadTimeout` included, is `UncertainBroadcast` and is **never** rolled back.
+- **The dry run ate the queue.** It claimed every order and wrote a `DRYRUN-…` hash, so the
+  go-live backlog would have vanished behind a fake receipt on the first night. A dry run
+  now writes nothing at all.
+- **`PAYOUT_ASSET=TRX` sent dollars as a coin count.** A $480 night would have paid ~$144
+  and looked like a clean success. TRX is now refused rather than approximated; it needs a
+  real price feed with its own fail-closed behaviour, not a multiplication by one.
+- **The stuck-claim sweep could cause a double payment.** It reported *in-flight* claims as
+  abandoned, so an operator would untick orders a live run had already broadcast. Claims are
+  now timestamped and only swept after an hour. `send()` also refuses to return success with
+  an empty tx hash, which produced the same outcome.
+- **A misformatted start date failed silently in both directions.** `2026-9-5` sorts above
+  every real timestamp (pays nobody, forever); `09/05/2026` sorts below (sweeps the entire
+  back catalogue). Both look like a reasonable date to a human. `parse_fee_cutoff` now
+  validates and the run blocks.
+- **One malformed Order Item stopped all payouts forever.** `it["fields"]` and
+  `int(f["kits"])` raised out of the batch build, above every alert path, leaving only a log
+  line. One bad row now costs one order.
+- The field-existence probe **wrote a null into a live order every night** to test for a
+  field — which could untick another run's claim. It is now a read.
+- Marking a line unpriceable by renaming its product **does not work**: `catalog.find`
+  substring-matches, so `"[unreadable] Retatrutide"` still resolves. Refusals are an
+  explicit `problems` list.
+
+### The bac-water hole closed itself
+
+The first cut of this was a flat $12 a box, and 84 kits of bac water ship as ONE 23 kg box
+(§30) — **$12 for 23 kg of lifting** while the same weight of anything else paid $144.
+There was a `WAREHOUSE_FEE_WATER_BY_WEIGHT` switch to price an uncapped box as if it had
+been split. The $15.90/kg term makes all of that unnecessary and the switch is **gone**:
+that order now pays $12 + $366.18 = $378.18 with no special case for water anywhere. Do not
+reintroduce it — with a weight term it would double-count, adding ~$156 of fees for boxes
+that do not exist.
+
+`PAYOUT_MAX_USD` was raised 1500 → 3000 at the same time: one bulk water order is now ~$378
+on its own, so a legitimate night is far larger than it used to be and the old ceiling would
+have blocked real payments.
+
+### Go-live
+
+1. Add the four Airtable fields.
+2. Fund a **dedicated** Tron wallet: a few weeks of fees in USDT plus ~50 TRX for energy.
+   A wallet holding USDT and no TRX cannot send anything; `preflight()` says so in words.
+3. Set the env vars (see `.env.example`), leaving `PAYOUT_DRY_RUN=1`.
+4. `python3 -m agents.warehouse_payout preview` — prints the exact statement, the config
+   check, and anything marked paid without a transaction. Nothing is written.
+5. Let one dry night run. The alert email shows what it *would* have paid.
+6. When that looks right, `PAYOUT_DRY_RUN=0`.
+
+`regenerate_price_sheets.sh` is untouched — no prices moved.
+
+### Verification
+
+148 passing (82 new: `tests/test_warehouse_fees.py`, `tests/test_warehouse_payout.py`).
+A test asserts `catalog.PACKAGE_TARE_G == 350`, so a change to the box weight fails loudly
+here rather than silently repricing every payment.
+The fee tests run against the **real catalog** on purpose, so they also fail if the payout's
+box count ever drifts from the manifest's. The orchestration tests fake Airtable and Tron
+specifically so a half-succeeded broadcast can be simulated on demand.

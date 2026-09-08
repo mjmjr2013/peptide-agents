@@ -3,6 +3,11 @@ from pyairtable import Api
 from config import settings
 
 
+class AlreadyPaid(Exception):
+    """An order already carries a real transaction hash. Raised instead of
+    overwriting it — see `claim_warehouse_fee`."""
+
+
 class AirtableClient:
     """Thin wrapper around pyairtable with table references."""
 
@@ -343,6 +348,237 @@ class AirtableClient:
         if not include_legacy:
             clauses.append(self._NOT_LEGACY)
         return self.orders.all(formula=f"AND({','.join(clauses)})")
+
+    # ── Warehouse payouts (HANDOFF §32) ────────────────────────────────────
+    # Four fields on Orders carry the whole payout ledger. They must be created
+    # by hand in Airtable — the API cannot add fields — and until they exist the
+    # nightly payout REFUSES TO RUN rather than degrading like the `warehouse`
+    # field does (§31). Degrading there loses a label on a report; degrading here
+    # loses the record of who has been paid, and the next night pays them again.
+    #
+    #   warehouse_fee_paid   checkbox          ← the claim; exactly-once lives here
+    #   warehouse_fee_usd    number (2 dp)
+    #   warehouse_boxes      number (integer)
+    #   warehouse_fee_tx     single line text  ← 'pending' while in flight
+    _PAYOUT_FIELDS = ("warehouse_fee_paid", "warehouse_fee_usd",
+                      "warehouse_boxes", "warehouse_fee_tx")
+
+    def payout_fields_missing(self) -> list[str]:
+        """Which payout fields the Orders table does NOT have.
+
+        Asks for exactly those fields on one record. Airtable 422s on an unknown
+        field name, so an UNKNOWN_FIELD_NAME error names the missing one — a pure
+        read that answers the question without touching a record.
+
+        It deliberately does NOT use `orders.schema()` (that needs the
+        `schema.bases:read` PAT scope, which this token may not have) and it does
+        NOT probe by writing. An earlier draft wrote a null into a live order every
+        night to test for a field; besides bumping Last-Modified and firing any
+        record-updated automation, a null write to `warehouse_fee_paid` would
+        UNTICK a claim another run had just made, and that order would then be paid
+        a second time. A read cannot do that.
+        """
+        missing = []
+        for name in self._PAYOUT_FIELDS:
+            try:
+                self.orders.all(fields=[name], max_records=1)
+            except Exception as e:
+                text = str(e)
+                if "UNKNOWN_FIELD_NAME" in text or "Unknown field name" in text:
+                    missing.append(name)
+                else:
+                    raise RuntimeError(
+                        f"could not check the Orders table for {name}: {e}") from e
+        return missing
+
+    @staticmethod
+    def _as_date(value) -> str:
+        """Normalise anything Airtable might hand back to 'YYYY-MM-DD', or ''.
+
+        `paid_at` is written as an ISO UTC datetime, `created_at` may be a date,
+        and `createdTime` is always an ISO datetime — but a field can be retyped
+        in the UI at any moment, and a lexical compare on whatever comes out is
+        how a cutoff silently starts matching everything or nothing.
+        """
+        if not isinstance(value, str):
+            return ""
+        v = value.strip()[:10]
+        try:
+            from datetime import date
+            date.fromisoformat(v)
+        except ValueError:
+            return ""
+        return v
+
+    @classmethod
+    def parse_fee_cutoff(cls, since_iso: str) -> str:
+        """Validate WAREHOUSE_FEE_START_DATE, or raise.
+
+        A lexical compare against an unvalidated string is a live hazard, not a
+        theoretical one: '2026-9-5' (no zero padding) sorts ABOVE every real
+        timestamp and silently pays nobody forever, while '09/05/2026' sorts
+        BELOW every real timestamp and sweeps in the entire back catalogue on the
+        first run. Both look like a perfectly reasonable date to a human.
+        """
+        v = cls._as_date(since_iso or "")
+        if not v:
+            raise ValueError(
+                f"WAREHOUSE_FEE_START_DATE must be YYYY-MM-DD (zero padded), "
+                f"got {since_iso!r}")
+        return v
+
+    def get_orders_awaiting_warehouse_fee(self, since_iso: str = "") -> list[dict]:
+        """Paid orders Jason has NOT yet been paid for.
+
+        The selection is a state, not a date range: 'paid to the customer, and
+        `warehouse_fee_paid` not ticked'. That is what makes the nightly job
+        exactly-once and self-healing — a night that fails to run, or a Railway
+        restart mid-batch, leaves the orders unticked and the next night picks
+        them up. A date window would silently drop them.
+
+        `since_iso` is the backfill cutoff (WAREHOUSE_FEE_START_DATE): orders paid
+        before the feature existed were settled some other way and must not be
+        swept into the first run. Note the timestamps are UTC while the cutoff is
+        a plain date, so orders paid late on the evening BEFORE go-live (Denver)
+        are already the next day in UTC and will be included. That is a handful of
+        boxes once, in Jason's favour; the alternative is dropping real orders.
+        """
+        clauses = ["{payment_status}='paid'", "NOT({warehouse_fee_paid})", self._NOT_LEGACY]
+        rows = self.orders.all(formula=f"AND({','.join(clauses)})")
+        if not since_iso:
+            return rows
+        cutoff = self.parse_fee_cutoff(since_iso)
+        keep = []
+        for r in rows:
+            f = r["fields"]
+            stamp = (self._as_date(f.get("paid_at")) or self._as_date(f.get("created_at"))
+                     or self._as_date(r.get("createdTime")))
+            # No usable timestamp at all => treat as older than the cutoff.
+            # Fail toward not paying.
+            if stamp and stamp >= cutoff:
+                keep.append(r)
+        return keep
+
+    CLAIM_PREFIX = "claim:"
+
+    def claim_warehouse_fee(self, order_id: str, boxes: int, usd: float,
+                            run_token: str = "") -> dict:
+        """Tick `warehouse_fee_paid` BEFORE the transfer is broadcast.
+
+        The order matters and it is the single most important line in this
+        feature. Claim-then-send can underpay Jason if the send fails (visible,
+        recoverable, and `release_warehouse_fee` undoes it). Send-then-claim can
+        pay him TWICE if the write fails after a successful broadcast, and a Tron
+        transfer cannot be pulled back. Always fail toward not paying.
+
+        `run_token` is written into `warehouse_fee_tx` as `claim:<token>`. Airtable
+        has no compare-and-swap, so two runs racing (a Railway rolling deploy keeps
+        the old container alive alongside the new one, and both run the scheduler)
+        can both claim the same order. Stamping WHOSE claim it is lets the caller
+        re-read afterwards and pay only the orders still carrying its own token —
+        last writer wins, consistently, for both runs. See `verify_claims`.
+        """
+        # NEVER write over a real transaction hash. A second run claiming an order
+        # that has already been paid would erase the only evidence of the first
+        # payment — the double payment would delete its own audit trail. A record
+        # that already carries a hash is finished; refuse and let the caller drop it.
+        current = ""
+        try:
+            current = str(self.get_order(order_id)["fields"].get("warehouse_fee_tx") or "")
+        except Exception as e:
+            raise RuntimeError(f"could not read {order_id} before claiming it: {e}") from e
+        if current and not current.startswith((self.CLAIM_PREFIX, "pending")):
+            raise AlreadyPaid(
+                f"{order_id} already carries transaction {current} — not re-claiming it")
+        import time as _t
+        stamp = f"{self.CLAIM_PREFIX}{int(_t.time())}:{run_token}" if run_token else "pending"
+        return self.orders.update(order_id, {
+            "warehouse_fee_paid": True,
+            "warehouse_boxes": int(boxes),
+            "warehouse_fee_usd": round(float(usd), 2),
+            "warehouse_fee_tx": stamp,
+        })
+
+    def confirm_warehouse_fee(self, order_id: str, tx_hash: str) -> dict:
+        """Replace 'pending' with the real transaction hash once it is on-chain."""
+        return self.orders.update(order_id, {"warehouse_fee_tx": (tx_hash or "")[:255]})
+
+    def verify_claims(self, order_ids: list[str], run_token: str) -> dict:
+        """Split `order_ids` into {mine, lost, unreadable} by claim token.
+
+        Called after a short settle delay and BEFORE the transfer, so that when two
+        runs race, each pays only what it still owns and no order is paid twice.
+        An order whose token was overwritten belongs to the other run: dropping it
+        here means this run does not pay for it, which is the safe direction.
+
+        A read failure is reported SEPARATELY rather than folded into `lost`: both
+        mean "do not pay this now", but only one of them means another run has it.
+        An Airtable 429 — very possible, since this fires N reads straight after N
+        writes against a 5 req/s limit — would otherwise look like a lost race and
+        silently underpay with nobody told.
+        """
+        mine, lost, unreadable = [], [], []
+        for oid in order_ids:
+            try:
+                tx = str(self.get_order(oid)["fields"].get("warehouse_fee_tx") or "")
+            except Exception as e:
+                print(f"[airtable] verify_claims {oid} failed: {e}")
+                unreadable.append(oid)
+                continue
+            (mine if tx.endswith(f":{run_token}") else lost).append(oid)
+        return {"mine": mine, "lost": lost, "unreadable": unreadable}
+
+    CLAIM_STALE_SECONDS = 3600
+
+    def get_stuck_warehouse_claims(self, stale_seconds: int | None = None) -> list[dict]:
+        """Orders marked paid whose transfer was never recorded.
+
+        These are the SILENT failures: a container killed between the claim and the
+        broadcast leaves an order ticked, unpaid, and invisible to every query —
+        `warehouse_fee_paid` is true so it never comes round again. Nothing else in
+        the system reads this state back, so the nightly job sweeps for it and says
+        so out loud. Without this the designed-recoverable failure is a permanent
+        loss that surfaces only when Jason complains.
+        """
+        import time as _t
+        cutoff = _t.time() - (self.CLAIM_STALE_SECONDS if stale_seconds is None
+                              else stale_seconds)
+        rows = self.orders.all(formula="AND({warehouse_fee_paid},"
+                                       "OR({warehouse_fee_tx}='',"
+                                       "{warehouse_fee_tx}='pending'))")
+        claims = self.orders.all(
+            formula=f"AND({{warehouse_fee_paid}},"
+                    f"LEFT({{warehouse_fee_tx}},{len(self.CLAIM_PREFIX)})="
+                    f"'{self.CLAIM_PREFIX}')")
+        seen = {r["id"] for r in rows}
+        for r in claims:
+            if r["id"] in seen:
+                continue
+            # AGE MATTERS, and getting this wrong pays twice. A claim marker on a
+            # record may belong to a run that is alive RIGHT NOW, sitting in
+            # `result.wait()` with the transfer already broadcast. Reporting that as
+            # abandoned tells an operator to untick it, and the next run pays it
+            # again — in exactly the concurrent-deploy case the token exists for.
+            # Only a claim older than an hour can safely be called dead.
+            try:
+                claimed_at = float(str(r["fields"].get("warehouse_fee_tx", ""))
+                                   .removeprefix(self.CLAIM_PREFIX).split(":")[0])
+            except (ValueError, IndexError):
+                claimed_at = 0.0        # unstamped legacy claim — treat as old
+            if claimed_at <= cutoff:
+                rows.append(r)
+        return rows
+
+    def release_warehouse_fee(self, order_id: str) -> dict:
+        """Undo a claim after a send that definitely did NOT go out, so the order
+        returns to the queue for the next night. Never called for an uncertain
+        broadcast — see UncertainBroadcast in core/tron_payout.py."""
+        return self.orders.update(order_id, {
+            "warehouse_fee_paid": False,
+            "warehouse_fee_tx": "",
+            "warehouse_fee_usd": None,
+            "warehouse_boxes": None,
+        })
 
     def attach_vial_photo(self, order_id: str, content: bytes, filename: str,
                           content_type: str = "image/jpeg") -> str:
