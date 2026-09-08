@@ -2098,3 +2098,52 @@ Until a wallet and key exist the system is inert and safe: `PAYOUT_DRY_RUN` is u
 Railway and therefore ON, and `JASON_TRON_ADDRESS` / `PAYOUT_TRON_PRIVATE_KEY` are unset,
 so the nightly run computes and emails and broadcasts nothing.
 
+### 32c. The payout wallet exists (2026-09-07)
+
+Jordan asked whether his existing **Phantom** wallet could send these payments, wanting
+fewer moving pieces, and — after the answer in §32b — whether a key-management service
+with a policy engine was worth setting up now. It is not, and the numbers are not close:
+**Fireblocks starts in the six figures a year** against a float that will hold a few
+hundred dollars. The dedicated wallet with a small balance IS the policy engine here;
+it is simply implemented in cheaper materials, and the balance is the spending limit.
+
+Revisit that decision on a TRIGGER, not a date: the float needing to exceed roughly
+$10k, recipients becoming plural (an address allowlist starts to earn its keep), more
+than one person able to deploy to Railway, or an audit trail someone else must accept.
+The realistic option then is the developer-priced tier — Turnkey, Dfns, Coinbase CDP —
+not Fireblocks. Confirm Tron support at that point; Fireblocks has TRX and all TRC20,
+the cheaper ones are often EVM/Solana-first.
+
+Two cheaper-looking alternatives were considered and rejected. Tron's native account
+permissions scope which OPERATIONS a key may perform, not which DESTINATION, so a stolen
+key could still send USDT anywhere — it does not address the actual risk. Tron multisig
+would stop a single-key drain but breaks unattended automation, because something must
+produce the second signature at midnight; that second automated signer is definitionally
+a KMS, so the argument closes back on itself.
+
+**The wallet: `TNTZSTHJeLqvQs9dGvkg433hUph9tt7E7V`** — generated fresh on Jordan's Mac
+with `tronpy`, used for nothing else, holding nothing else. The private key was written
+straight into `.env` (now **chmod 600**, it was 644 and now holds a spending key) and was
+never printed, echoed, passed as a command-line argument, or sent through chat. It is
+gitignored and untracked. The generator refuses to run if `PAYOUT_TRON_PRIVATE_KEY` is
+already set, so re-running it cannot orphan a funded wallet.
+
+⚠️ **The key is NOT in Railway yet, so the wallet is not wired to production.** The push
+was blocked by the sandbox classifier — correctly, it is a spending key leaving the
+machine — and was not worked around. Jordan sets it in the Railway dashboard by hand;
+until he does, `PAYOUT_TRON_PRIVATE_KEY` is unset there and nothing can send.
+
+`PAYOUT_DRY_RUN=1` is now set EXPLICITLY in Railway rather than left to the code default.
+An operator reading that dashboard should see dry run stated, not have to infer it from a
+missing variable.
+
+**`PAYOUT_STATEMENT_EMAIL` is unset, so statements fall back to `WAREHOUSE_EMAIL` —
+which is `jason@jjstshipping.com`, Jason himself.** During the dry run that means Jason
+receives statements for money that is not actually being sent. Pointing it at Jordan for
+the dry-run period was attempted and also blocked; do it by hand, and move it back to
+Jason at go-live so he can check his own pay, which was the point of the field.
+
+Remaining before money can move: put the key in Railway, fund the address with USDT-TRC20
+plus ~50 TRX for energy, set `JASON_TRON_ADDRESS`, watch one dry night, then
+`PAYOUT_DRY_RUN=0`.
+
