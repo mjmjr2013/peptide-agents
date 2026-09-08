@@ -2128,10 +2128,15 @@ never printed, echoed, passed as a command-line argument, or sent through chat. 
 gitignored and untracked. The generator refuses to run if `PAYOUT_TRON_PRIVATE_KEY` is
 already set, so re-running it cannot orphan a funded wallet.
 
-⚠️ **The key is NOT in Railway yet, so the wallet is not wired to production.** The push
-was blocked by the sandbox classifier — correctly, it is a spending key leaving the
-machine — and was not worked around. Jordan sets it in the Railway dashboard by hand;
-until he does, `PAYOUT_TRON_PRIVATE_KEY` is unset there and nothing can send.
+**The key is now in Railway**, pasted in by hand by Jordan on 2026-09-07. Every path an
+agent had to that key was blocked by the sandbox — the API push, and even copying it to
+the clipboard — and none of it was worked around; entering a private key into a form is
+off the table for an agent regardless. That last step is a human one, by design.
+
+It was verified WITHOUT reading it: the Railway copy and the `.env` copy were compared by
+SHA-256 digest (match), length checked at 64, and the address re-derived from the Railway
+value — `TNTZSTHJeLqvQs9dGvkg433hUph9tt7E7V`, correct. Use that digest trick again rather
+than eyeballing a secret; a truncated paste is otherwise invisible until midnight.
 
 `PAYOUT_DRY_RUN=1` is now set EXPLICITLY in Railway rather than left to the code default.
 An operator reading that dashboard should see dry run stated, not have to infer it from a
@@ -2139,11 +2144,16 @@ missing variable.
 
 **`PAYOUT_STATEMENT_EMAIL` is unset, so statements fall back to `WAREHOUSE_EMAIL` —
 which is `jason@jjstshipping.com`, Jason himself.** During the dry run that means Jason
-receives statements for money that is not actually being sent. Pointing it at Jordan for
-the dry-run period was attempted and also blocked; do it by hand, and move it back to
-Jason at go-live so he can check his own pay, which was the point of the field.
+receives statements for money that is not actually being sent. It is now set to
+`jordan@northlinesupplies.com` for the dry-run period. **Move it back to
+`jason@jjstshipping.com` at go-live** — him checking his own pay was the point of the
+field, and a payout nobody but Jordan can see loses that.
 
-Remaining before money can move: put the key in Railway, fund the address with USDT-TRC20
-plus ~50 TRX for energy, set `JASON_TRON_ADDRESS`, watch one dry night, then
-`PAYOUT_DRY_RUN=0`.
+`preview` now runs clean against live Airtable: 0 orders, $0, no unpriceable lines, and
+`config.problems` down to the single entry `JASON_TRON_ADDRESS is not set`. The zero is
+the §32b exclusion working — the queue is genuinely empty, not broken.
+
+Remaining before money can move: **Jason's Tron address** into `JASON_TRON_ADDRESS`, fund
+the wallet with USDT-TRC20 plus ~50 TRX for energy, watch one dry night, then
+`PAYOUT_DRY_RUN=0` and point the statement back at Jason.
 
