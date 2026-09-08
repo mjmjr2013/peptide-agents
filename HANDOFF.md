@@ -1840,7 +1840,7 @@ Unchanged from §31's list: `LIR30`'s 20mg/30mg conflict, `SLU-PP-332` vs `-322`
 volume discounts (deliberately not implemented).
 
 
-## 32. Automatic warehouse payouts to Jason on Tron (2026-09-04) — BUILT, NOT DEPLOYED
+## 32. Automatic warehouse payouts to Jason on Tron (2026-09-04) — DEPLOYED `8e14872`
 
 Jordan: *"a system that will make automatic crypto payments to our warehouse rep, Jason…
 analyze the composition of the order, figure out what the weight will be using the weight
@@ -2010,3 +2010,35 @@ here rather than silently repricing every payment.
 The fee tests run against the **real catalog** on purpose, so they also fail if the payout's
 box count ever drifts from the manifest's. The orchestration tests fake Airtable and Tron
 specifically so a half-succeeded broadcast can be simulated on demand.
+
+### 32a. Deployed (2026-09-07)
+
+Committed and pushed as `8e14872`, force-deployed by SHA per §10 (deployment
+`33a149c0`, SUCCESS, `meta.commitHash` matching; `/health` 200). Auto-deploy was
+not relied on — §10 step 2 as the default, as always.
+
+Full suite green before the commit: **1224 passed, 6 skipped**, including all 82
+payout tests.
+
+`tronpy` is a NEW runtime dependency (`requirements.txt`). Locally it was absent, and
+two tests failed until it was installed — worth knowing because the failure is silent
+in the safe direction: `tron_payout.valid_address` catches the ImportError and returns
+False, so a missing tronpy refuses every address rather than sending to an unchecked
+one. That is the correct behaviour, but it means "no tronpy" looks like "bad address"
+in the logs, not like a missing package.
+
+**The code is live; the go-live steps in §32 are NOT done by this deploy.** The
+nightly run now fires right after the manifest at `DAILY_MANIFEST_HOUR` (default
+07:00, report TZ). It stays harmless only because every default fails closed:
+`PAYOUT_DRY_RUN` defaults ON when the var is unset, an absent
+`PAYOUT_TRON_PRIVATE_KEY` never broadcasts, and the four missing Airtable fields
+fail the run closed. **The Railway variables were not readable from this session, so
+none of that was confirmed against the live environment.** Before the next
+`DAILY_MANIFEST_HOUR`, confirm in Railway that `PAYOUT_DRY_RUN` is `1` — if it is
+already `0` and the wallet is funded, this deploy pays out tonight.
+
+One more reason to check `WAREHOUSE_FEE_START_DATE` at the same time: unset means no
+cutoff, which sweeps the whole back catalogue. `PAYOUT_MAX_USD` (3000) would refuse
+that night rather than pay it, which is the bug catcher doing its job — but it reads
+as a broken payout, not as a misconfiguration.
+
