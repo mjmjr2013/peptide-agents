@@ -2042,3 +2042,59 @@ cutoff, which sweeps the whole back catalogue. `PAYOUT_MAX_USD` (3000) would ref
 that night rather than pay it, which is the bug catcher doing its job — but it reads
 as a broken payout, not as a misconfiguration.
 
+### 32b. Airtable fields created; retroactive payment made impossible (2026-09-07)
+
+Jordan: *"update the airtable with the new fields and make sure that this new auto
+payment to the warehouse starts now and that it doesn't apply retroactively to any of
+our previous orders."*
+
+**The four fields exist now** — created via the Airtable Meta API on Orders
+(`tblZHsYNcsExR3D45`), each with a description pointing back at §32:
+`warehouse_fee_paid` (checkbox), `warehouse_fee_usd` (number, 2 dp), `warehouse_boxes`
+(number, integer), `warehouse_fee_tx` (single line text). §32's go-live step 1 is done.
+
+**Retroactivity is closed twice over, and the second one is the real guard.**
+
+1. `WAREHOUSE_FEE_START_DATE=2026-09-07` is set in Railway. But §32 already records how
+   easily this single string fails in both directions, so it is not trusted alone.
+2. Every paid, non-legacy order that existed before go-live — three of them, paid
+   2026-07-15, 2026-08-19 and 2026-08-26 — is now ticked `warehouse_fee_paid` with
+   `warehouse_fee_tx=PRE-GOLIVE`. They are outside the queue by STATE, so they stay
+   excluded even if the start date is later blanked, mistyped, or reset by a Railway
+   restore. Verified by running the nightly selection with no cutoff at all: **0 orders**.
+
+`PRE-GOLIVE` is deliberately not `''`, not `pending`, and does not start with `claim:` —
+all three of those are what the stuck-claim sweep hunts for, so an empty marker would
+have made these three orders look like abandoned claims every night forever.
+
+They also carry `warehouse_fee_usd=0` / `warehouse_boxes=0`, so no report ever counts
+them as money paid to Jason. Nobody has been underpaid: this fee did not exist when
+those orders shipped.
+
+**`DAILY_MANIFEST_HOUR` is `0`, not the 7 the code comment claims as the default.** The
+manifest — and now the payout immediately after it — fires just after MIDNIGHT in the
+report timezone. Worth knowing before anyone waits at 07:00 to watch the first run.
+
+### Phantom cannot be the sending wallet — asked and answered
+
+Jordan asked whether payments could go out of his existing **Phantom** wallet instead of
+a new Tron one, wanting fewer moving pieces. They cannot, for two independent reasons:
+
+- **Phantom has no Tron support.** It covers Solana, Ethereum, Base, Polygon, Sui, Monad,
+  Bitcoin, HyperEVM and Robinhood Chain. Jason is paid at a Tron address, and the chain
+  is set by where he RECEIVES, not by our preference — so Phantom cannot reach him at all.
+- **A signing wallet cannot be automated, by design.** Phantom holds its key behind a
+  password and requires a human tap per transaction. A Railway container waking at
+  midnight has no browser and nobody to tap. Automating it means exporting the raw key
+  into an env var — at which point the blast radius of any bug in `core/tron_payout.py`
+  becomes *everything in Jordan's personal wallet*, on the same host that runs an LLM
+  agent. §32's "dedicated wallet holding a small float" is the entire safety model.
+
+So: **automatic payment requires a dedicated hot wallet. The only way to avoid one is to
+give up the automatic part** and pay Jason by hand from the statement the system already
+emails. That trade is Jordan's to make; it was put to him on 2026-09-07.
+
+Until a wallet and key exist the system is inert and safe: `PAYOUT_DRY_RUN` is unset in
+Railway and therefore ON, and `JASON_TRON_ADDRESS` / `PAYOUT_TRON_PRIVATE_KEY` are unset,
+so the nightly run computes and emails and broadcasts nothing.
+
