@@ -4,8 +4,9 @@ Paste this into a fresh Claude Code session (run from `~/peptide-agents`) to con
 It describes the live WhatsApp sales agent, the new order/payment/fulfillment system,
 how to deploy/debug, and what's outstanding. No secret tokens are stored here.
 
-**Last updated 2026-09-03. Read §31a FIRST — it is the newest.** §31a records the §31 deploy
-(commit `614dd64`) and the one test that had to be fixed to get there. §31 is the change itself.
+**Last updated 2026-09-13. Read §33 FIRST — it is the newest.** §33 is Daniel's at-cost order
+code (USSTOCK26, deployed `20a04fe`), the readout of what else the group chat asks for, and the
+Tron payout's remaining two human steps. §32–§32c is the payout system itself.
 
 **§30k and below are history.** §30i restyles the manifest rows
 as the workbook table (sticker on the right) and makes the vial photo per PACKAGE, matching the
@@ -2157,3 +2158,80 @@ Remaining before money can move: **Jason's Tron address** into `JASON_TRON_ADDRE
 the wallet with USDT-TRC20 plus ~50 TRX for energy, watch one dry night, then
 `PAYOUT_DRY_RUN=0` and point the statement back at Jason.
 
+
+## 33. USSTOCK26 — Daniel's at-cost stock order — DEPLOYED `20a04fe` (2026-09-13)
+
+Read from the Harrison/Daniel iMessage group (Fri 2026-09-11 10:04 AM onward), at
+Jordan's request. Three things in it concern this system; one is built.
+
+### Built: the at-cost order code
+
+Daniel: *"To make a code for us to use I need to get one that's an at cost order. For a
+final test with the warehouse and sticker factory. Going to order full stock for the US
+warehouse and some stuff for AI that he wants."* He sent a list at $1,906.46, then
+*"Correct order list sorry"* — **20 lines, 62 kits, "Total cost : $1,140".**
+
+**`USSTOCK26`** in `core/deals.py`, the §24 mechanism. Daniel messages Lily the code →
+she confirms 62 kits / $1,140 → BTC or USDT → payment instructions (no artwork step).
+Paid, it hits every downstream a paid order does: Jason's nightly manifest, the weekly
+supplier bulk (that is how "the lab" gets it — Daniel forwards, §7), and the §32
+payout queue.
+
+Decisions, and why:
+
+- **$0 shipping** — Jordan's call, 2026-09-13. The order is company money moving
+  company stock to the US warehouse; Jason's packing/freight is covered by the §32
+  payout, so a shipping line would pay for it twice. DIEGO26's $100 was a customer
+  quote; this is not a customer.
+- **His $1,140, not the catalog's $1,135.90.** A deal total is human-set (§24). The
+  $4.10 is rounding on his sheet. `tests/test_deals.py` asserts the deal stays within
+  $10 of the catalog cost basis, so if costs move far enough that it stops being
+  at-cost, the test says so.
+- **Two of his SKU labels are not catalog SKUs.** `KLOW80` → `KLOW` (the only KLOW,
+  80mg) and `10AM` → `5AM10` (5-Amino-1MQ 10mg; `50AM` is the 50mg on the same
+  list). Mapped, and the test pins the mapping so nobody re-guesses it.
+- **Nothing goes to the sticker factory.** Daniel said "final test with the warehouse
+  and sticker factory", but this is Northline-labelled stock and the factory path
+  (`notify_factory_for_order`) is white-label only. If he actually wants a Northline
+  print run tested through the system, that is a different feature — raise it, do not
+  flip `requires_artwork` on this deal (Lily would demand artwork from Daniel).
+- **It will be the first order the §32 payout pays on**: `split_packages` gives 4
+  boxes (3 mixed at the 2 kg cap + the exempt 10-kit water box), 8.19 kg gross ≈
+  **$178 to Jason** — once dry run is off. While dry run is on it appears on the
+  statement and nothing moves.
+
+`tests/test_deals.py` is new and also pins DIEGO26 for the first time (30 kits, 25
+branded, 21 designs, $3,393.64). Suite: **1229 passed, 6 skipped.**
+
+Deployed by SHA per §10 — SUCCESS, `meta.commitHash` = `20a04fe`, `/health` 200.
+
+### Not built: what else the chat asks for
+
+**Daniel — US warehouse live inventory with QR picking** (Sat 2026-09-12). Verbatim:
+*"a live stock counter of the US warehouse that we can use a phone to scan a QR code to
+fill out an order. Example: US warehouse order is placed. Worker (Samani) gets a
+notification on her phone, she uses a QR code scanner to check out each product SKU,
+then when it's done, she submits it, packs, ships at USPS, and the AI system reports
+that back into the system for real time updates both for the customer and for the
+live stock counter. And help us keep track of each unit in the system."* Nothing exists
+for this. Relevant current fact: **no code branches on the `warehouse` field** — every
+paid order goes to Jason's manifest and into the payout queue regardless of whether it
+was priced as a US order (§31). A US-warehouse flow has to start by splitting that.
+Scoping is the next step; Jordan has been told.
+
+**Harrison → Daniel: "Where's my API price list"** (Fri 9:44 PM). Daniel: "working on
+it". Reads as Daniel's task. Noted only so nobody builds an API for it unasked.
+
+### Tron payout — still two human steps from live
+
+Checked 2026-09-13. `preview` still reports `JASON_TRON_ADDRESS is not set`, and the
+payout wallet `TNTZSTHJeLqvQs9dGvkg433hUph9tt7E7V` is **0 TRX / 0 USDT, never
+activated** — read from the public ledger (`api.trongrid.io/v1/accounts/<addr>`, no
+key, no secret; tronscan's API returns 401 without a key, use TronGrid). Both steps
+are Jordan's: Jason's address into Railway, and funding. Then one dry night,
+`PAYOUT_DRY_RUN=0`, statement email back to Jason (§32c).
+
+Tooling note: this session's permission classifier refused a Railway `variables`
+query made with the token (it reads every secret in the service). The public-ledger
+read plus `python3 -m agents.warehouse_payout preview` answered the same question
+without touching a secret — prefer that.
