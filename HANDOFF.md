@@ -4,10 +4,10 @@ Paste this into a fresh Claude Code session (run from `~/peptide-agents`) to con
 It describes the live WhatsApp sales agent, the new order/payment/fulfillment system,
 how to deploy/debug, and what's outstanding. No secret tokens are stored here.
 
-**Last updated 2026-09-14. Read §33g FIRST — it is the newest.** §33g: payout wallet funded (2,493
-USDT + 410 TRX), preview clean at $215.17 for Daniel's 3 orders — one dry night then flip
-`PAYOUT_DRY_RUN=0` to go live. §33f is bug 1 fixed (`4482937`); §33e the incident (bug 2, split
-payments, still open).
+**Last updated 2026-09-14. Read §33i FIRST — it is the newest.** §33i: sticker-factory vial-label
+email — manifest-style, sent for the 3 current orders and now auto-sending weekly (`09d9e4f`).
+§33h: TronGrid key in place + `pay_jason` manual tool. §33g: payout LIVE ($215.17 tonight). §33e/f:
+bug 1 fixed, bug 2 (split payments) still open.
 
 **(Earlier pointer, still valid) Read §33d FIRST — it is the newest.** §33d is USSTOCK26 as it now
 works (deployed `e2cd77f`): an at-cost code locked to Daniel's phone, reusable, normal flat
@@ -2567,3 +2567,44 @@ import the wallet into **TronLink** (phone) by its private key — from `.env`,
 enter Railway secrets by hand). Verified: Railway value matches local, redeploy SUCCESS, `/health`
 200. `pay_jason` preview and preflight now read the wallet with no rate-limit error. The nightly run
 is no longer a coin-flip on the anonymous quota.
+
+## 33i. Sticker-factory vial-label email — sent + weekly automation — DEPLOYED `09d9e4f` (2026-09-14)
+
+Jordan: send the sticker factory (`FACTORY_EMAIL` = 2641377459@qq.com) a simple
+manifest-style list — **code, quantity, and the label image inline** — no
+spreadsheet, no zip, and **no order numbers** (the factory doesn't need them). Send
+this batch now, and **auto-send weekly** for the week's orders, like the supplier
+bulk email.
+
+This is distinct from §25's factory hand-off, which is WHITE-LABEL only (a customer's
+own artwork per paid deal). This new path sends our STANDARD Northline vial labels
+(the 151-SKU set from §30c–e) so the factory prints stock to fulfill orders. There
+was no such sender before — despite the "we built it before" recollection, only the
+white-label one existed.
+
+**`tools/send_sticker_list.py`** — builds an HTML email with each label image inline
+(CID in the email, data: URIs in the preview), one row per SKU: code · product ·
+qty in **vials (kits×10)** · the sticker. `preview` writes an HTML to eyeball;
+`--send` emails and marks. Reusable.
+
+**Selection is state-based, like the supplier bulk.** New field **`Orders.stickers_sent`**
+(checkbox, Meta API `fldhNp2QEXTpARjng`). `get_orders_needing_stickers()` =
+paid AND not legacy AND **not tracking_sent** AND not stickers_sent. The
+tracking-not-sent clause is what stops the FIRST run sweeping the whole shipped back
+catalogue; `stickers_sent` then prevents re-sends across weekly runs.
+
+**Weekly** on the **Sunday 00:00** beat in `run_report_scheduler` (right after the
+supplier bulk), calling `tools.send_sticker_list.send()`. Missed Sundays roll into the
+next run — nothing dropped.
+
+**On demand:** token-guarded **`POST /send-stickers?token=<MANIFEST_TOKEN>`** runs the
+same send. POST (not GET) so a crawler can't trigger it.
+
+**This batch was sent 2026-09-14** via that route (HTTP 200 `{"sent":true}`): the three
+USSTOCK26 orders, 22 codes, 870 vial labels. All three are now `stickers_sent=True`
+and `get_orders_needing_stickers()` is empty.
+
+Note: local `.env` has neither the Gmail creds nor `FACTORY_EMAIL` (both Railway-only),
+so `--send` cannot run from the Mac — it must run where the creds are (Railway). That
+is why the immediate send went through the deployed route, not a local CLI call.
+Suite: **1256 passed, 6 skipped** (`tests/test_sticker_list.py`).
