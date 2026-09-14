@@ -2561,3 +2561,9 @@ support is already there. Until then tonight's live run is a coin-flip on the qu
 Most independent emergency fallback, needing neither the repo nor a TronGrid key:
 import the wallet into **TronLink** (phone) by its private key — from `.env`,
 `PAYOUT_TRON_PRIVATE_KEY` — and send USDT on the Tron/TRC20 network from the app.
+
+**Closed 2026-09-14 05:56 UTC.** `TRONGRID_API_KEY` is now set in BOTH local `.env` and Railway
+(Jordan added the Railway copy himself; the API write is blocked for the agent and he prefers to
+enter Railway secrets by hand). Verified: Railway value matches local, redeploy SUCCESS, `/health`
+200. `pay_jason` preview and preflight now read the wallet with no rate-limit error. The nightly run
+is no longer a coin-flip on the anonymous quota.
