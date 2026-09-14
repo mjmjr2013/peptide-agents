@@ -54,6 +54,48 @@ _DIEGO26_ITEMS = [
     ("KS10",   "KissPeptin-10",      "10mg",   1, 1),
 ]
 
+# ── USSTOCK26 ──────────────────────────────────────────────────────────────────
+# Daniel's own order (iMessage, 2026-09-11): opening stock for the US warehouse plus
+# a few kits for the AI test, placed AT COST as the final end-to-end test of the
+# warehouse + sticker flow before it runs for strangers. Not a customer — the money
+# is the company's — so there is no margin, no white label, no shipping line.
+#
+# $1,140 is Daniel's figure ("Total cost : $1,140"); the catalog's cost basis for
+# the same 62 kits is $1,135.90. Kept at HIS number because a deal total is set by
+# a human, not derived (§24) — the $4.10 is rounding on his sheet, not a discount.
+#
+# Two of his SKU labels are not catalog SKUs and were mapped, not guessed:
+#   "KLOW80" → KLOW  (BPC+TB+GHK+KPV 80mg — the only KLOW)
+#   "10AM"   → 5AM10 (5-Amino-1MQ 10mg; 50AM is the 50mg he also ordered)
+#
+# The order ships from Jason to the US warehouse. It hits every downstream flow a
+# paid order does — nightly manifest, weekly supplier bulk, and the §32 warehouse
+# payout (4 boxes / 8.19 kg gross ≈ $178 to Jason, once dry run is off). Nothing
+# goes to the sticker factory: that path is white-label only (`requires_artwork`).
+_USSTOCK26_ITEMS = [
+    # (sku, product, spec, kits, wl_kits)
+    ("RT20",   "Retatrutide",             "20mg",      6, 0),
+    ("RT100",  "Retatrutide",             "100mg",     1, 0),
+    ("TR10",   "Tirzepatide",             "10mg",      3, 0),
+    ("TR20",   "Tirzepatide",             "20mg",      3, 0),
+    ("SM10",   "Semaglutide",             "10mg",      3, 0),
+    ("KLOW",   "BPC+TB+GHK+KPV",          "80mg",      2, 0),   # Daniel wrote "KLOW80"
+    ("BC10",   "BPC-157",                 "10mg",      4, 0),
+    ("BT10",   "TB-500",                  "10mg",      2, 0),
+    ("MS10",   "MOTS-c",                  "10mg",      2, 0),
+    ("MS20",   "MOTS-c",                  "20mg",      4, 0),
+    ("MS40",   "MOTS-c",                  "40mg",      1, 0),
+    ("TSM10",  "Tesamorelin",             "10mg",      2, 0),
+    ("NJ1000", "NAD",                     "1000mg",    2, 0),
+    ("DS5",    "DSIP",                    "5mg",       6, 0),
+    ("50AM",   "5-Amino/MQ",              "50mg",      2, 0),
+    ("5AM10",  "5-Amino/MQ",              "10mg",      2, 0),   # Daniel wrote "10AM"
+    ("P41",    "PT-141",                  "10mg",      3, 0),
+    ("XA10",   "Semax",                   "10mg",      2, 0),
+    ("SK10",   "Selank",                  "10mg",      2, 0),
+    ("BAC10",  "Bacteriostatic Water",    "10ml",     10, 0),
+]
+
 DEALS: dict[str, dict] = {
     "DIEGO26": {
         "code": "DIEGO26",
@@ -67,6 +109,18 @@ DEALS: dict[str, dict] = {
         "notes": ("Daniel-approved price match. Do not renegotiate or apply further "
                   "discounts. Add-on vials ship under Northline labels — Daniel arranges "
                   "those with Jason directly, they are NOT part of the factory job."),
+    },
+    "USSTOCK26": {
+        "code": "USSTOCK26",
+        "label": "At-cost US warehouse stock — Daniel's end-to-end test",
+        "items": _USSTOCK26_ITEMS,
+        "items_total": 1140.00,     # Daniel's figure; catalog cost is $1,135.90
+        "white_label_fee": 0.00,    # Northline's own labels — nothing to print
+        "shipping": 0.00,           # internal stock move; Jason is paid via §32 instead
+        "requires_artwork": False,  # no artwork step, straight to payment instructions
+        "one_time": True,           # burns once the order is paid
+        "notes": ("Daniel's own at-cost order for US warehouse stock. Not a customer "
+                  "price — do not quote it, compare it, or reuse it."),
     },
 }
 
