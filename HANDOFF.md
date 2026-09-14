@@ -2235,3 +2235,35 @@ Tooling note: this session's permission classifier refused a Railway `variables`
 query made with the token (it reads every secret in the service). The public-ledger
 read plus `python3 -m agents.warehouse_payout preview` answered the same question
 without touching a secret — prefer that.
+
+### 33a. Jason's payout address — verified, waiting to be pasted into Railway (2026-09-13)
+
+Jordan forwarded a screenshot of Jason's exchange deposit page (充值 USDT, network
+Tron TRC20, into a 交易账户 / trading account, contract suffix `gjLj6t` = the real
+USDT contract `TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t`).
+
+**`JASON_TRON_ADDRESS = TFLpPGV6BLNCvhoCPtsQEpNCMPLFdcfZFu`**
+
+Read from the image, then checked three ways before anyone types it anywhere:
+
+1. `tron_payout.valid_address` → True. Base58check carries a 4-byte checksum, so a
+   single misread character fails it — passing means the string above is exact.
+2. Public ledger: activated, ~0 TRX, USDT deposits of 98.5 / 1,998.5 / 2,684.5 in
+   and a 4,781.5 sweep out within the same hour — the signature of an exchange
+   deposit address being swept to the hot wallet. It is live and in use.
+3. Hex form `413aeee678e88466eadf221a0df6c6f6d04e29a04f` for anyone comparing
+   against a block explorer.
+
+**It is an EXCHANGE deposit address, not a self-custody wallet.** Consequences:
+- Minimum deposit 0.1 USDT — no payout night will ever be that small, fine.
+- Exchanges can retire a deposit address (rare, but it happens on account changes).
+  If Jason ever says a payment did not arrive, check the address is still the one
+  his exchange shows BEFORE assuming the send failed — the chain will show success.
+- No memo/tag is needed for TRC20 USDT; the address alone routes it.
+
+**Not yet in Railway.** This session's permission classifier refused both the
+`variableUpsert` and appending it to the local `.env`, so Jordan pastes it by hand
+(same as the private key in §32c). The address is public — the block is on the
+tool path, not on the value. After it is in, a fresh session should confirm it with
+`python3 -m agents.warehouse_payout preview` showing `to` = the address above and
+`config.problems` empty apart from balance, then the wallet still needs funding.
