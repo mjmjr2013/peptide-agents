@@ -27,13 +27,37 @@ def test_diego26_is_pinned():
     assert d["one_time"] and d["requires_artwork"]
 
 
-# ── USSTOCK26 — Daniel's at-cost rehearsal code (HANDOFF §33c) ───────────────
+# ── USSTOCK26 — Daniel's at-cost stock-order code (HANDOFF §33c/§33d) ────────
+DANIEL = "+14806366814"      # HANDOFF §28; the number the code is locked to
+STRANGER = "+15550009999"
+
+
 def test_usstock26_is_an_at_cost_code_not_a_basket():
     """It was a fixed basket for a few hours on 2026-09-13; Jordan reworked it
     so Daniel enters the order himself. It must never come back as a deal."""
     assert deals.get_deal("USSTOCK26") is None
     spec = deals.get_at_cost_code("usstock26")
-    assert spec and spec["code"] == "USSTOCK26" and spec["one_time"] is True
+    assert spec and spec["code"] == "USSTOCK26"
+
+
+def test_usstock26_is_reusable_and_locked_to_daniels_phone():
+    """Jordan, 2026-09-13: not single use — Daniel orders the company's own stock
+    with it repeatedly — so the PHONE LOCK is the only guard. It must be there."""
+    spec = deals.get_at_cost_code("USSTOCK26")
+    assert spec["one_time"] is False
+    assert spec["phones"] == (DANIEL,)
+    assert deals.phone_allowed(spec, DANIEL)
+    assert deals.phone_allowed(spec, "whatsapp:" + DANIEL)
+    assert deals.phone_allowed(spec, "(480) 636-6814")
+    assert not deals.phone_allowed(spec, STRANGER)
+    assert not deals.phone_allowed(spec, "")
+    assert not deals.phone_allowed(spec, "6814")        # a suffix is not a match
+
+
+def test_every_at_cost_code_is_locked_to_at_least_one_phone():
+    """An open at-cost code would hand our cost sheet to whoever guessed it."""
+    for code, spec in deals.AT_COST_CODES.items():
+        assert spec.get("phones"), f"{code} is not locked to a phone"
 
 
 def test_a_code_is_exactly_one_kind():
@@ -90,14 +114,25 @@ def test_validator_at_cost_still_refuses_what_the_warehouse_does_not_sell():
     assert items == [] and unpriced and unpriced[0]["product"] == "DSIP"
 
 
-def test_at_cost_prompt_overrides_tiers_and_shipping():
+def test_at_cost_prompt_overrides_tiers_and_keeps_shipping_charged():
     import agents.messaging_agent as ma
     p = ma._build_order_prompt("china", at_cost=True)
     assert p.endswith(ma._AT_COST_PROMPT)
     assert "INTERNAL AT-COST PRICES" in p
-    assert "SHIPPING IS FREE for this buyer" in p
+    assert "NO free-shipping threshold" in p and "Never waive the $95" in p
     assert "1-24 kits" not in p
     assert "INTERNAL AT-COST" not in ma._build_order_prompt("china")
+
+
+def test_at_cost_orders_pay_flat_shipping_with_no_free_threshold():
+    """Jordan, 2026-09-13: "don't do free shipping. Charge the flat $95." A
+    $1,500 at-cost order still pays $95; a $1,500 customer order does not."""
+    import agents.messaging_agent as ma
+    assert ma._shipping_fee("standard", 1500) == 0
+    assert ma._shipping_fee("standard", 1500, free_threshold=False) == 95
+    assert ma._shipping_fee("standard", 200, free_threshold=False) == 95
+    assert ma._shipping_fee("expedited", 1500, free_threshold=False) == 235
+    assert ma._shipping_fee("standard", 1500, warehouse="us", free_threshold=False) == 30
 
 
 # ── Arming, remembering, spending ────────────────────────────────────────────
@@ -109,26 +144,62 @@ def _fake_airtable(redeemed: bool = False, lead_update_error: str = ""):
     return at
 
 
-def test_arming_remembers_the_code_in_memory_and_on_the_lead():
+def test_arming_from_daniels_phone_remembers_the_code_in_memory_and_on_the_lead():
     import agents.messaging_agent as ma
     ma._at_cost.clear(); ma._pricing_field_ok = True
     with mock.patch.object(ma, "airtable", _fake_airtable()) as at, \
          mock.patch.object(ma, "_notify_operators"):
-        reply = ma._arm_at_cost("+15550001", "usstock26", {"id": "recL", "fields": {}})
+        reply = ma._arm_at_cost("whatsapp:" + DANIEL, "usstock26", {"id": "recL", "fields": {}})
         assert "special pricing" in reply
-        assert ma._at_cost["+15550001"] == "USSTOCK26"
+        assert ma._at_cost["whatsapp:" + DANIEL] == "USSTOCK26"
         at.leads.update.assert_called_once_with("recL", {"pricing_code": "USSTOCK26"})
-        assert ma.get_at_cost_code("+15550001") == "USSTOCK26"
+        assert ma.get_at_cost_code("whatsapp:" + DANIEL) == "USSTOCK26"
 
 
-def test_a_spent_code_does_not_arm():
+def test_another_phone_presenting_the_code_is_refused_and_reported():
     import agents.messaging_agent as ma
     ma._at_cost.clear()
-    with mock.patch.object(ma, "airtable", _fake_airtable(redeemed=True)), \
+    with mock.patch.object(ma, "airtable", _fake_airtable()) as at, \
          mock.patch.object(ma, "_notify_operators") as ops:
-        reply = ma._arm_at_cost("+15550002", "USSTOCK26", {"id": "recL", "fields": {}})
+        reply = ma._arm_at_cost(STRANGER, "USSTOCK26", {"id": "recX", "fields": {}})
+        assert "check that code" in reply and "USSTOCK26" not in reply
+        assert STRANGER not in ma._at_cost
+        assert not at.leads.update.called
+        assert "WRONG PHONE" in ops.call_args[0][0]
+
+
+def test_the_lock_holds_even_if_the_code_is_on_the_wrong_lead():
+    """pricing_code pasted onto a stranger's lead by hand must do nothing."""
+    import agents.messaging_agent as ma
+    ma._at_cost.clear()
+    with mock.patch.object(ma, "airtable", _fake_airtable()):
+        assert ma.get_at_cost_code(STRANGER, {"id": "recX", "fields": {"pricing_code": "USSTOCK26"}}) == ""
+        assert STRANGER not in ma._at_cost
+
+
+def test_usstock26_survives_a_paid_order_because_it_is_reusable():
+    """Redemption is not even consulted for a code that is not one_time."""
+    import agents.messaging_agent as ma
+    ma._at_cost.clear(); ma._at_cost[DANIEL] = "USSTOCK26"
+    at = _fake_airtable(redeemed=True)
+    with mock.patch.object(ma, "airtable", at):
+        assert ma.get_at_cost_code(DANIEL) == "USSTOCK26"
+        assert not at.is_promo_redeemed.called
+
+
+_ONESHOT = {"ONESHOT1": {"code": "ONESHOT1", "label": "test", "one_time": True,
+                         "phones": (DANIEL,), "notes": ""}}
+
+
+def test_a_spent_one_time_code_does_not_arm():
+    import agents.messaging_agent as ma
+    ma._at_cost.clear()
+    with mock.patch.dict(deals.AT_COST_CODES, _ONESHOT), \
+         mock.patch.object(ma, "airtable", _fake_airtable(redeemed=True)), \
+         mock.patch.object(ma, "_notify_operators") as ops:
+        reply = ma._arm_at_cost(DANIEL, "ONESHOT1", {"id": "recL", "fields": {}})
         assert "already been used" in reply
-        assert "+15550002" not in ma._at_cost
+        assert DANIEL not in ma._at_cost
         assert ops.called
 
 
@@ -138,32 +209,33 @@ def test_unlock_is_read_back_from_the_lead_after_a_deploy():
     ma._at_cost.clear()
     lead = {"id": "recL", "fields": {"pricing_code": "usstock26"}}
     with mock.patch.object(ma, "airtable", _fake_airtable()):
-        assert ma.get_at_cost_code("+15550003", lead) == "USSTOCK26"
-        assert ma._at_cost["+15550003"] == "USSTOCK26"      # re-cached
+        assert ma.get_at_cost_code(DANIEL, lead) == "USSTOCK26"
+        assert ma._at_cost[DANIEL] == "USSTOCK26"      # re-cached
 
 
-def test_unlock_dies_once_an_order_carrying_it_is_paid():
+def test_a_one_time_unlock_dies_once_an_order_carrying_it_is_paid():
     import agents.messaging_agent as ma
-    ma._at_cost.clear(); ma._at_cost["+15550004"] = "USSTOCK26"
-    lead = {"id": "recL", "fields": {"pricing_code": "USSTOCK26"}}
-    with mock.patch.object(ma, "airtable", _fake_airtable(redeemed=True)):
-        assert ma.get_at_cost_code("+15550004", lead) == ""
-        assert "+15550004" not in ma._at_cost
+    ma._at_cost.clear(); ma._at_cost[DANIEL] = "ONESHOT1"
+    lead = {"id": "recL", "fields": {"pricing_code": "ONESHOT1"}}
+    with mock.patch.dict(deals.AT_COST_CODES, _ONESHOT), \
+         mock.patch.object(ma, "airtable", _fake_airtable(redeemed=True)):
+        assert ma.get_at_cost_code(DANIEL, lead) == ""
+        assert DANIEL not in ma._at_cost
 
 
-def test_unlock_fails_toward_the_sheet_price_when_airtable_is_down():
+def test_a_one_time_unlock_fails_toward_the_sheet_price_when_airtable_is_down():
     import agents.messaging_agent as ma
-    ma._at_cost.clear(); ma._at_cost["+15550005"] = "USSTOCK26"
+    ma._at_cost.clear(); ma._at_cost[DANIEL] = "ONESHOT1"
     at = _fake_airtable(); at.is_promo_redeemed.side_effect = Exception("airtable 503")
-    with mock.patch.object(ma, "airtable", at):
-        assert ma.get_at_cost_code("+15550005") == ""
+    with mock.patch.dict(deals.AT_COST_CODES, _ONESHOT), mock.patch.object(ma, "airtable", at):
+        assert ma.get_at_cost_code(DANIEL) == ""
 
 
 def test_an_unknown_code_on_the_lead_is_ignored():
     import agents.messaging_agent as ma
     ma._at_cost.clear()
     with mock.patch.object(ma, "airtable", _fake_airtable()):
-        assert ma.get_at_cost_code("+15550006", {"id": "x", "fields": {"pricing_code": "NOPE"}}) == ""
+        assert ma.get_at_cost_code(DANIEL, {"id": "x", "fields": {"pricing_code": "NOPE"}}) == ""
 
 
 def test_missing_lead_field_degrades_to_memory_only_and_says_so_once(capsys):
@@ -171,9 +243,10 @@ def test_missing_lead_field_degrades_to_memory_only_and_says_so_once(capsys):
     ma._at_cost.clear(); ma._pricing_field_ok = True
     at = _fake_airtable(lead_update_error='422 UNKNOWN_FIELD_NAME "pricing_code"')
     with mock.patch.object(ma, "airtable", at), mock.patch.object(ma, "_notify_operators"):
-        ma._arm_at_cost("+15550007", "USSTOCK26", {"id": "recL", "fields": {}})
-        ma._arm_at_cost("+15550008", "USSTOCK26", {"id": "recM", "fields": {}})
-    assert ma._at_cost["+15550007"] == ma._at_cost["+15550008"] == "USSTOCK26"
+        ma._arm_at_cost(DANIEL, "USSTOCK26", {"id": "recL", "fields": {}})
+        ma._at_cost.clear()
+        ma._arm_at_cost("whatsapp:" + DANIEL, "USSTOCK26", {"id": "recL", "fields": {}})
+    assert ma._at_cost["whatsapp:" + DANIEL] == "USSTOCK26"
     assert at.leads.update.call_count == 1            # gave up after the first refusal
     assert "add it" in capsys.readouterr().out
     ma._pricing_field_ok = True

@@ -102,9 +102,10 @@ THIS BUYER HAS AN APPROVED INTERNAL PRICE CODE — this overrides the pricing an
   not compare them with any other price.
 - There are NO quantity tiers and NO breakpoints for this buyer — one price at any quantity.
   Never mention 25-kit or 100-kit pricing.
-- SHIPPING IS FREE for this buyer, from either warehouse, standard or expedited. Say the
-  shipping fee is $0 and the final total is the product total. Still ask standard or
-  expedited from China (it decides how the parcel travels), and still ask which warehouse.
+- SHIPPING IS CHARGED AT THE NORMAL FLAT RATES for this buyer — $95 standard or $235
+  expedited from China, $30 from the US warehouse — and there is NO free-shipping threshold
+  for them, whatever the product total. Never waive the $95. State shipping and the final
+  total (products + shipping) when confirming, exactly as for any order.
 - Do NOT use action "send_price_list" for this buyer — the spreadsheet carries the wrong
   prices. If they ask for the full list, the system sends their list; just put a one-line warm
   reply in reply_message and use action "collect".
@@ -466,19 +467,26 @@ def get_at_cost_code(phone: str, existing_lead: dict | None = None) -> str:
     buyer gets ordinary pricing for that turn rather than a cost price the
     code may no longer entitle them to; the next message tries again.
     """
-    from core.deals import get_at_cost_code as _lookup
+    from core.deals import get_at_cost_code as _lookup, phone_allowed
     code = (_at_cost.get(phone) or "").strip().upper()
     if not code and existing_lead:
         code = ((existing_lead.get("fields") or {}).get(_LEAD_PRICING_FIELD) or "").strip().upper()
-    if not code or not _lookup(code):
+    spec = _lookup(code) if code else None
+    if not spec:
         return ""
-    try:
-        if airtable.is_promo_redeemed(code):
-            _at_cost.pop(phone, None)
+    # The phone lock is checked on EVERY read, not just at arming: a code copied
+    # onto another lead's pricing_code by hand must still do nothing there.
+    if not phone_allowed(spec, phone):
+        _at_cost.pop(phone, None)
+        return ""
+    if spec.get("one_time"):
+        try:
+            if airtable.is_promo_redeemed(code):
+                _at_cost.pop(phone, None)
+                return ""
+        except Exception as e:
+            print(f"[AtCost] redemption check failed for {phone} ({code}): {e!r} — sheet price this turn")
             return ""
-    except Exception as e:
-        print(f"[AtCost] redemption check failed for {phone} ({code}): {e!r} — sheet price this turn")
-        return ""
     _at_cost[phone] = code
     return code
 
@@ -504,19 +512,30 @@ def _write_pricing_code(lead_id: str, code: str) -> None:
 def _arm_at_cost(phone: str, code: str, existing_lead: dict | None) -> str:
     """Buyer presented an at-cost code. Validate, remember, and confirm — the
     ORDER itself is not touched; it proceeds through the ordinary flow."""
-    from core.deals import get_at_cost_code as _lookup
+    from core.deals import get_at_cost_code as _lookup, phone_allowed
     spec = _lookup(code)
     if not spec:
         return ""
-    try:
-        if spec.get("one_time") and airtable.is_promo_redeemed(spec["code"]):
-            _notify_operators(f"[CODE REUSE] {phone} presented {spec['code']} but it is "
-                              f"already redeemed.")
-            return ("Thank you dear! That code has already been used for an order. "
-                    "Let me check with my manager and come back to you very quick 😊")
-    except Exception as e:
-        print(f"[AtCost] redemption check failed for {phone}: {e!r} — not arming")
-        return "One moment dear, let me check that code for you 🙏"
+    if not phone_allowed(spec, phone):
+        # Someone other than the code's owner has it. Do not confirm or deny
+        # that it exists; stall warmly, tell ops who tried, and leave the
+        # conversation on ordinary pricing.
+        _notify_operators(f"[CODE · WRONG PHONE] {phone} presented {spec['code']}, which is "
+                          f"locked to another number. Not applied. If this is a leak, the "
+                          f"code lives in core/deals.py.")
+        print(f"[AtCost] {phone} presented {spec['code']} — not an allowed phone, refused")
+        return ("Thank you dear! Let me check that code with my manager and come back "
+                "to you very quick 😊")
+    if spec.get("one_time"):
+        try:
+            if airtable.is_promo_redeemed(spec["code"]):
+                _notify_operators(f"[CODE REUSE] {phone} presented {spec['code']} but it is "
+                                  f"already redeemed.")
+                return ("Thank you dear! That code has already been used for an order. "
+                        "Let me check with my manager and come back to you very quick 😊")
+        except Exception as e:
+            print(f"[AtCost] redemption check failed for {phone}: {e!r} — not arming")
+            return "One moment dear, let me check that code for you 🙏"
     _at_cost[phone] = spec["code"]
     lead = existing_lead
     if not lead:
@@ -530,7 +549,9 @@ def _arm_at_cost(phone: str, code: str, existing_lead: dict | None) -> str:
         _write_pricing_code(lead["id"], spec["code"])
     print(f"[AtCost] {phone} armed {spec['code']}")
     _notify_operators(f"[AT-COST CODE] {phone} activated {spec['code']}: every line prices at "
-                      f"cost and shipping is $0 until an order carrying it is paid.")
+                      f"cost, normal flat shipping"
+                      + (", until an order carrying it is paid." if spec.get("one_time")
+                         else ", on every order from this number."))
     return ("Of course, dear 😊 Your code is on your account now, so your special pricing "
             "applies to whatever you order. What would you like, dear — and shall we ship "
             "from China or from our US warehouse?")
@@ -778,7 +799,8 @@ def _validate_line_items(line_items: list[dict],
 
 def _shipping_fee(shipping: str, product_subtotal: float,
                   items: list[dict] | None = None,
-                  warehouse: str = DEFAULT_WAREHOUSE) -> int:
+                  warehouse: str = DEFAULT_WAREHOUSE,
+                  free_threshold: bool = True) -> int:
     """The shipping charge the customer sees.
 
     Delegates to core.shipping so there is ONE implementation of the rule, now
@@ -786,8 +808,10 @@ def _shipping_fee(shipping: str, product_subtotal: float,
     unchanged: the weight guard is off (shipping.FREE_SHIPPING_MAX_KG is None)
     until Jordan sets a threshold, because this number is quoted to real buyers.
     Passing `items` costs nothing today and is what the guard will read.
+    `free_threshold=False` is the at-cost case — see shipping_quote.
     """
-    return shipping_quote(shipping, product_subtotal, items, warehouse)
+    return shipping_quote(shipping, product_subtotal, items, warehouse,
+                          free_threshold=free_threshold)
 
 
 # Cost guardrail: the whole history is re-sent to Claude on every reply, so an
@@ -1930,9 +1954,10 @@ def _handle_ordering(phone: str, conversation: list[dict], existing_lead: dict |
         if coin not in ("USDT", "BTC"):
             return "Almost there, dear! We accept both BTC and USDT — which would you prefer to use?"
         subtotal = round(sum(i["line_total"] for i in items), 2)
-        # $0 shipping on an at-cost order (Jordan, 2026-09-13): Jason's freight
-        # is paid by the §32 payout, so charging it here would pay it twice.
-        ship_fee = 0 if at_cost else _shipping_fee(shipping, subtotal, items, warehouse)
+        # An at-cost order pays the normal flat shipping with NO free-over-$1000
+        # (Jordan, 2026-09-13, reversing the $0 from earlier the same day).
+        ship_fee = _shipping_fee(shipping, subtotal, items, warehouse,
+                                 free_threshold=not at_cost)
         total_usd = round(subtotal + ship_fee, 2)
 
         # Internal-only freight visibility. The customer's quote above is
@@ -1995,17 +2020,18 @@ def _handle_ordering(phone: str, conversation: list[dict], existing_lead: dict |
             return "Sorry dear, a small hiccup setting up your order — please try again in a moment."
         airtable.update_lead_status(lead_id, "Converted", notes=notes)
         if at_cost:
-            # The code is spent by THIS order reaching 'paid' (is_promo_redeemed),
-            # so the order must carry it. If this write fails the order still
-            # stands — it is just not one-time any more — so shout, don't stall.
+            # The order carries the code: that is what marks it an at-cost order
+            # in Airtable and reports, and for a one-time code it is what spends
+            # it (is_promo_redeemed). If this write fails the order still stands
+            # — shout, don't stall.
             try:
                 airtable.orders.update(order["id"], {"promo_code": at_cost_code})
             except Exception as e:
                 print(f"[AtCost] could not stamp {at_cost_code} on {ref}: {e!r}")
                 _notify_operators(f"[AT-COST · code not recorded] {ref} for {phone} was placed "
                                   f"at cost under {at_cost_code} but the code could not be "
-                                  f"written to the order, so it is NOT spent. Fix the order's "
-                                  f"promo_code by hand.")
+                                  f"written to the order. Set the order's promo_code by hand "
+                                  f"so it is reported (and, if one-time, spent) correctly.")
         _pending_payments[phone] = {"order_id": order["id"], "coin": coin, "expected": expected,
                                     "since": time.time() - 180, "charge_usd": charge_usd, "ref": ref}
         set_stage(phone, "awaiting_payment")

@@ -240,7 +240,8 @@ US_FLAT_USD = 30
 
 def shipping_quote(shipping: str, product_subtotal: float,
                    items: list[dict] | None = None,
-                   warehouse: str = pricing.DEFAULT_WAREHOUSE) -> int:
+                   warehouse: str = pricing.DEFAULT_WAREHOUSE,
+                   free_threshold: bool = True) -> int:
     """The shipping charge shown to the customer, in whole dollars.
 
     There is deliberately NO weight term: heavy freight is priced into the
@@ -250,12 +251,17 @@ def shipping_quote(shipping: str, product_subtotal: float,
 
     `warehouse` defaults to China, so every caller that predates the US
     warehouse keeps exactly the behavior it had.
+
+    `free_threshold=False` switches off the free-over-$1000 rule and nothing
+    else. It exists for at-cost orders (core.deals.AT_COST_CODES): that rule is
+    a customer perk keyed to a retail subtotal, and at cost the flat rate is
+    always charged (Jordan, 2026-09-13).
     """
     if warehouse == pricing.WAREHOUSE_US:
         return US_FLAT_USD
     if shipping == "expedited":
         return EXPEDITED_USD
-    if product_subtotal > FREE_OVER_USD:
+    if free_threshold and product_subtotal > FREE_OVER_USD:
         return 0
     return STANDARD_USD
 

@@ -76,14 +76,18 @@ DEALS: dict[str, dict] = {
 # A deal fixes the BASKET and the TOTAL in advance. An at-cost code fixes nothing:
 # the holder goes through the ordinary flow — products, warehouse, coin, then
 # name and address after payment, exactly as a customer would — and every line
-# is priced at our COST instead of the sheet, with $0 shipping (Jordan,
-# 2026-09-13: Jason's freight is paid by the §32 payout, not by this order).
+# is priced at our COST instead of the sheet. Shipping is charged at the normal
+# flat rates with NO free-shipping threshold (Jordan, 2026-09-13: "charge the
+# flat $95") — the free-over-$1000 rule is a customer perk keyed to retail
+# subtotals and would fire on almost any at-cost order.
 #
-# It exists for one purpose: letting Daniel run real orders through Lily as
-# rehearsals, paid with the company's own money. Because it puts cost prices in
-# a chat, a code is one-time — spent once an order carrying it is paid, via the
-# same `promo_code` field and `is_promo_redeemed()` the deals use — and it must
-# never be given to a customer.
+# It exists for one purpose: letting Daniel order the company's own stock
+# through Lily, and get rehearsal reps on the agent while he does. Because it
+# puts cost prices in a chat, a code is LOCKED TO A PHONE: `phones` is the
+# allowlist, compared on the last ten digits, and any other number presenting
+# the code is refused and reported. That lock, not single use, is the guard —
+# Jordan wants Daniel to use it again and again ("don't make it single use").
+# `one_time` is still honoured if a future code sets it.
 #
 # USSTOCK26 started life (2026-09-13, same day) as a fixed 62-kit basket at
 # $1,140 for the US warehouse stock. Jordan reworked it into this the same
@@ -92,10 +96,11 @@ DEALS: dict[str, dict] = {
 AT_COST_CODES: dict[str, dict] = {
     "USSTOCK26": {
         "code": "USSTOCK26",
-        "label": "Daniel — at-cost rehearsal order",
-        "one_time": True,
-        "notes": ("Internal. Prices every line at cost, shipping $0. Not a customer "
-                  "code — never quote it, share it, or reuse it."),
+        "label": "Daniel — at-cost stock orders",
+        "phones": ("+14806366814",),   # Daniel. HANDOFF §28 — never an operator number
+        "one_time": False,             # reusable from that phone, every order at cost
+        "notes": ("Internal. Prices every line at cost; normal flat shipping, no free "
+                  "threshold. Valid from Daniel's number only — never quote or share it."),
     },
 }
 
@@ -108,6 +113,24 @@ assert not (set(DEALS) & set(AT_COST_CODES)), "a code cannot be both a deal and 
 def get_at_cost_code(code: str) -> dict | None:
     """Look up an at-cost code (case-insensitive). None if unknown."""
     return AT_COST_CODES.get(normalize(code))
+
+
+def _last10(phone: str) -> str:
+    """Comparable core of a phone number — same rule as the agent's _digits10,
+    kept separate so this module stays import-free of the agent."""
+    import re
+    d = re.sub(r"\D", "", phone or "")
+    return d[-10:] if len(d) >= 10 else d
+
+
+def phone_allowed(spec: dict, phone: str) -> bool:
+    """Whether this phone may use an at-cost code. A code with no `phones` is
+    open to any number — none is configured that way, and none should be."""
+    allowed = spec.get("phones") or ()
+    if not allowed:
+        return True
+    me = _last10(phone)
+    return bool(me) and any(_last10(a) == me for a in allowed)
 
 
 def find_at_cost_code_in(text: str) -> str | None:
