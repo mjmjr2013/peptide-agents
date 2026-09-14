@@ -2528,3 +2528,36 @@ THEN flip both switches. First real transfer is irreversible.
 
 
 **LIVE as of 2026-09-14 05:33 UTC.** Jordan set `PAYOUT_DRY_RUN=0` and `PAYOUT_STATEMENT_EMAIL=jason,jordan`; read back and confirmed, redeploy `a18074e` SUCCESS, `/health` 200. `PAYOUT_MAX_USD`/`PAYOUT_ASSET` unset → code defaults 3000/USDT (both correct). Statement CCs `MANIFEST_CC`=daniel@. First REAL payout fires tonight at `DAILY_MANIFEST_HOUR=0` — $215.17 to Jason for orders 5273/9174/978F. Verify on-chain after it runs: the send, the tx hash on each order, and the wallet balance drop.
+
+### 33h. Manual payout tool + a TronGrid-key reliability gap found (2026-09-14)
+
+Jordan asked how to pay Jason by hand "just in case". `tools/pay_jason.py` does it,
+reusing `core.tron_payout.send` (recipient fixed to Jason, USDT-only, preflight,
+uncertain-broadcast-never-retried). Preview shows the wallet and what it would send;
+`--live` plus typing the amount back is the only way to actually send. Key read from
+`.env`, never printed.
+
+    python3 -m tools.pay_jason 50            # preview
+    python3 -m tools.pay_jason 50 --live     # send $50 USDT to Jason
+
+**The gap it surfaced: on-chain reads go through the FREE ANONYMOUS TronGrid tier,
+which is rate-limited (429/401).** `_client()` in `core/tron_payout.py` uses
+`TRONGRID_API_KEY` if set, else an anonymous provider — and **`TRONGRID_API_KEY` is
+unset in Railway.** `preflight()` reads the wallet via tronpy (`/wallet/getaccount`,
+`triggerconstantcontract`); keyless, both 429'd on repeat calls today. The raw REST
+`/v1/accounts` endpoint I used elsewhere is separate and still open — this is
+tronpy's `/wallet/*` path specifically.
+
+Consequence: the **nightly payout runs the same preflight**, so on a night the shared
+anonymous quota is busy it fails the on-chain read → `send()` raises PayoutError →
+nothing is sent, orders unclaimed, an alert email goes out. Fails SAFE (no double-pay,
+no wrong amount) but Jason may go unpaid on a throttled night, and the manual tool
+429s the same way. `settings.py` already documents the key as the fix.
+
+**Action for Jordan:** create a free key at trongrid.io → add `TRONGRID_API_KEY` to
+**Railway** (nightly job) and to local **.env** (the manual tool). No code change; the
+support is already there. Until then tonight's live run is a coin-flip on the quota.
+
+Most independent emergency fallback, needing neither the repo nor a TronGrid key:
+import the wallet into **TronLink** (phone) by its private key — from `.env`,
+`PAYOUT_TRON_PRIVATE_KEY` — and send USDT on the Tron/TRC20 network from the app.
