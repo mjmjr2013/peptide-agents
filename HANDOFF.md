@@ -4,9 +4,10 @@ Paste this into a fresh Claude Code session (run from `~/peptide-agents`) to con
 It describes the live WhatsApp sales agent, the new order/payment/fulfillment system,
 how to deploy/debug, and what's outstanding. No secret tokens are stored here.
 
-**Last updated 2026-09-14. Read §33f FIRST — it is the newest.** §33f is bug 1 fixed (a new order
-no longer fails an already-paid one, `4482937`). §33e is the incident that found it: Daniel's three
-at-cost orders all paid on-chain, none auto-confirmed (bug 2, split payments, still open).
+**Last updated 2026-09-14. Read §33g FIRST — it is the newest.** §33g: payout wallet funded (2,493
+USDT + 410 TRX), preview clean at $215.17 for Daniel's 3 orders — one dry night then flip
+`PAYOUT_DRY_RUN=0` to go live. §33f is bug 1 fixed (`4482937`); §33e the incident (bug 2, split
+payments, still open).
 
 **(Earlier pointer, still valid) Read §33d FIRST — it is the newest.** §33d is USSTOCK26 as it now
 works (deployed `e2cd77f`): an at-cost code locked to Daniel's phone, reusable, normal flat
@@ -2506,4 +2507,22 @@ address. Sent freeform (he was inside the 24h window). His stage set to `fulfill
 
 **Bug 2 (split payments never match) is still open** — Jordan chose "bug 1 first".
 The 1,485.38 USDT at 03:43 is still untraced.
+
+### 33g. Payout wallet funded; preview clean — one flag from live (2026-09-14)
+
+Jordan funded `TNTZSTHJeLqvQs9dGvkg433hUph9tt7E7V`: on-chain **2,493.89 USDT + 410.7
+TRX** (read from TronGrid). `python3 -m agents.warehouse_payout preview` with Jason's
+address and the live start date in scope returns **config.ok=true, no problems, 3
+orders, $215.17** (5273 $22.65 + 9174 $36.64 + 978F $155.88; 6 boxes, 9.01 kg gross).
+
+Every §32 go-live prerequisite is now met EXCEPT the two switches, both of which are
+Jordan's to throw (money-enabling, and the Railway write is blocked for the agent):
+1. `PAYOUT_DRY_RUN=1 -> 0`
+2. `PAYOUT_STATEMENT_EMAIL` back to `jason@jjstshipping.com` (currently jordan@ for
+   the dry-run period, §32c).
+
+The nightly run fires at `DAILY_MANIFEST_HOUR=0` — just after midnight, report TZ
+(§32b). While dry-run stays on it emails the statement (to Jordan) and sends nothing.
+Recommended per §32: let ONE dry night email the statement, confirm it reads $215.17,
+THEN flip both switches. First real transfer is irreversible.
 
