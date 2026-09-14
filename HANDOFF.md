@@ -4,9 +4,10 @@ Paste this into a fresh Claude Code session (run from `~/peptide-agents`) to con
 It describes the live WhatsApp sales agent, the new order/payment/fulfillment system,
 how to deploy/debug, and what's outstanding. No secret tokens are stored here.
 
-**Last updated 2026-09-13. Read §33 FIRST — it is the newest.** §33 is Daniel's at-cost order
-code (USSTOCK26, deployed `20a04fe`), the readout of what else the group chat asks for, and the
-Tron payout's remaining two human steps. §32–§32c is the payout system itself.
+**Last updated 2026-09-13. Read §33c FIRST — it is the newest.** §33c is USSTOCK26 as it now
+works: an at-cost CODE that arms cost pricing through the ordinary order flow (deployed `2ac09c1`).
+§33 is the fixed-basket version it replaced, plus the group-chat readout; §33a–b are the Tron payout
+(Jason's address confirmed in Railway, customers stay on ERC-20/BTC, wallet funding paused).
 
 **§30k and below are history.** §30i restyles the manifest rows
 as the workbook table (sticker on the right) and makes the vial photo per PACKAGE, matching the
@@ -2293,3 +2294,87 @@ TRC20 network (Crypto.com supports it) plus TRX to `TNTZSTHJeLqvQs9dGvkg433hUph9
 roughly monthly. That is also the safety model working as designed (§32c: the balance
 is the spending limit), so it is a feature, not a chore to automate away. A nightly
 sweep was described as the only way to make it self-funding and was not wanted.
+
+## 33c. USSTOCK26 reworked: an at-cost CODE, not a fixed basket — DEPLOYED `2ac09c1` (2026-09-13)
+
+§33's fixed 62-kit basket lived for a few hours. Jordan, same evening: *"I want the
+code to be a one time use that allows Daniel to place an order AT COST, but don't
+pre-fill any of the order specifics. Daniel will enter his order and address and
+name like any regular order. This way it's another way to test the agent and get
+more reps in."*
+
+So the code no longer opens an order. It **arms cost pricing for the phone that
+presents it**, and everything else is the ordinary customer flow — warehouse, items,
+coin, payment instructions, on-chain verification, then name and address, manifest,
+supplier bulk, §32 payout. If Daniel's rehearsal exercises a path, it is the real
+path.
+
+### What a code is now
+
+`core/deals.py` has a second registry, **`AT_COST_CODES`**, beside `DEALS`. A deal
+fixes the basket and the total; an at-cost code fixes nothing. An `assert` at import
+keeps a string from being both — the two are matched in `handle_inbound` one after
+the other and a code that was both would race.
+
+Presenting the code → `_arm_at_cost` → Lily: *"Your code is on your account now, so
+your special pricing applies to whatever you order."* If the same message also says
+what they want ("USSTOCK26 6 kits reta 20mg"), it arms silently and the ordinary
+path answers that message with the new prices already in force.
+
+### What changes when it is armed — three things, nothing else
+
+1. **The catalog in Lily's prompt** is `get_catalog_text(warehouse, at_cost=True)`:
+   ONE column, our cost, with cents, no tiers. The product list per warehouse is
+   unchanged — a China-only SKU is still absent from the US table.
+2. **`_validate_line_items(…, at_cost=True)`** swaps the sheet price for
+   `cost_of()` on every line — the NUMBER only. The sheet lookup still decides
+   whether the warehouse sells the SKU, so it fails closed exactly as before.
+3. **Shipping is $0** (Jordan, earlier the same day — Jason's freight is the §32
+   payout, charging it here would pay it twice).
+
+And a prompt section `_AT_COST_PROMPT` is appended LAST so it overrides the tier,
+breakpoint and shipping rules above it. Lily is never told the word "cost": to her
+these are simply this buyer's prices, so she does not apologise for them, call them a
+discount, or compare them to anything. `send_price_list` for an at-cost buyer sends
+**their table as text** — the XLSX/PDF are the customer sheets and there is
+deliberately no at-cost artwork that could be sent by mistake.
+
+### Where the unlock lives, and how it is spent
+
+- **Memory** `_at_cost[phone]`, wiped by every deploy like the rest of live state.
+- **Durable copy** on the lead: **`Leads.pricing_code`** (single line text, created via
+  the Meta API, `fld01ZBgZB4Dnxg7z`). `get_at_cost_code()` reads it back when memory
+  is empty. If the field is ever missing the code degrades to memory-only and logs
+  "add it" once — a missing column must not block an order.
+- **Spent** exactly as a deal is: the order is stamped `promo_code=USSTOCK26` when
+  placed, and `is_promo_redeemed()` (a PAID order carrying the code) makes the unlock
+  inert from then on — surviving deploys, and immune to the awaiting-order recovery
+  path. The lead still carries the string; it just no longer entitles anything.
+- If stamping the order fails, the order STANDS and ops get a loud email saying the
+  code is not spent — an unstamped at-cost order is a bookkeeping problem, a stalled
+  one is a lost rep.
+
+**Fails toward the sheet price.** If the redemption check cannot be made (Airtable
+down), the buyer gets ordinary pricing for that turn and the next message tries again.
+Never a cost price the code may no longer entitle them to.
+
+**RESET** clears the unlock (it deletes the lead, so the durable copy goes too). That is
+the intended rehearsal loop: Daniel can RESET, send the code again, and re-run — the
+code re-arms every time until an order under it is actually paid.
+
+### For Daniel
+
+Message Lily **`USSTOCK26`** from his own number, then order like a customer. Prices
+will be our cost to the cent, shipping $0, one use. The at-cost total will carry
+unique cents from `allocate_unique_amount` (the dollar base is ceiled, §24), so the
+charge may be a few cents above the raw cost sum — that is the payment matcher, not
+a pricing error.
+
+### Verification
+
+`tests/test_deals.py` rewritten: 16 tests — the DIEGO26 pin, the code being exactly
+one kind, cost-with-cents-no-tiers in both prompt tables, the US table still 30
+SKUs, the validator pricing at cost only when told and still refusing DSIP at the US
+warehouse, and arming / read-back after a deploy / death on redemption / fail-toward-
+sheet / degrade-without-the-field, all with Airtable faked. Suite: **1240 passed, 6
+skipped.** Deployed by SHA per §10 — SUCCESS, `2ac09c1` running, `/health` 200.
