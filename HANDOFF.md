@@ -2414,3 +2414,68 @@ accident.
 
 Suite: **1246 passed, 6 skipped** (22 in `tests/test_deals.py`). Deployed by SHA — SUCCESS,
 `e2cd77f` running, `/health` 200.
+
+## 33e. Daniel's three at-cost orders all paid, none auto-confirmed — TWO real bugs (2026-09-14)
+
+First live run of USSTOCK26 (§33d). Daniel placed **three separate orders to three
+addresses in one conversation** and paid all three in USDT-ERC20. **Every dollar
+landed in the receiving wallet** (`0xD1A3…9E37`, confirmed on-chain) — $2,537.97
+against $2,537.03 owed — and **not one order auto-confirmed.** Two independent bugs,
+both of which hit real customers, plus a cosmetic third.
+
+| ref | owed | paid on-chain | how it broke |
+|---|---|---|---|
+| `…5273` | 231.01 | 231.12 (1 tx) | superseded → `failed` before the watcher matched |
+| `…9174` | 429.01 | 429.21 (1 tx) | superseded → `failed` before the watcher matched |
+| `…978F` | 1877.01 | 814.16 + 995.45 + 68.03 = 1877.64 (3 tx) | split payment; matcher wants ONE transfer |
+
+### Bug 1 — a new order marks the previous one `failed`, even when it is paid
+
+`_handle_ordering`'s "place" path calls `get_awaiting_order_for_phone` and marks any
+prior awaiting order `failed` (the renegotiation/changed-mind guard, §ordering). But a
+customer placing a SECOND distinct order to a new address is not changing their mind.
+5273 and 9174 were both already **paid** when the next order buried them; the watcher
+only scans `awaiting`, so the payments were never matched. This is the dangerous one:
+any customer who orders to two addresses in one chat loses (and pays for) the first.
+
+### Bug 2 — a split payment never matches
+
+`verify_usdt_eth` matches a SINGLE inbound transfer against the expected amount (auto
+band: +max(5%,$15) / −$0.02). 978F was paid as three transfers, none near $1,877 — so
+it stays `awaiting` forever though it is fully paid. Daniel even announced the split
+("$814 from one wallet, $1,063 from another"). The loose review scan is also
+per-transfer, so it did not even flag it. Summing transfers is the fix, but it carries
+real misattribution risk on a shared address (§5/§27) — design it, do not bolt it on.
+
+### Bug 3 (cosmetic but misleading) — "Address saved" when nothing was saved
+
+Lily told Daniel "Address saved for order 2/3" while the structured `set_order_shipping`
+capture only runs in the `awaiting_address` stage — which is post-payment. He gave
+addresses during `awaiting_payment`, so Lily acknowledged them in chat and **nothing
+was written to the order.** All three orders had blank ship fields.
+
+### Remediation done tonight (Jordan's call: "mark all 3 paid", flow like real orders)
+
+- `mark_order_paid` on all three with their real tx hashes and on-chain timestamps
+  (5273 ← 0x9394f5…, 9174 ← 0x6cf732…, 978F ← 0x6b1cf0…, the first of its three).
+- Addresses back-filled from Daniel's own messages via `set_order_shipping`:
+  5273 → Keoki Galeai, 1204 N. Autumn Wind Dr., Nampa ID 83687;
+  9174 → Al Peters, 5782 S 1100 E, South Ogden UT 84405;
+  978F → Northline Group, 233 N Heathermoor Ln, Kaysville UT 84037.
+- All three now sit in `get_unmanifested_paid_orders`, so the next daily manifest and
+  weekly supplier bulk pick them up. `021D` stays `failed` — it was a pure duplicate of
+  5273 that never had a payment.
+
+Note: the Orders table has **no `notes` field** (that is on Leads) — a `notes` write
+422s. The reconciliation trail is here, not on the records.
+
+### Still open
+
+- **Daniel is not notified.** His three orders show paid but the watcher won't message
+  him (nothing `awaiting`), so his chat is stuck on "finance doesn't see it yet". Needs
+  a human ping or a stage nudge — not done without Jordan's say-so (business-initiated
+  message).
+- **Bugs 1 and 2 are unfixed in code.** They will recur for the next multi-order or
+  split-paying customer. Fixing is Jordan's call; both touch money-matching.
+- The **1,485.38 USDT at 03:43** (30 min before Daniel started) matches no order —
+  unexplained; possibly an earlier test or another sender. Worth tracing.
