@@ -110,6 +110,7 @@ US_CATALOG: list[dict] = [
     for sku, label, vial, kit in _US_ROWS
 ]
 _US_BY_SKU: dict[str, dict] = {r["sku"]: r for r in US_CATALOG}
+_COST_BY_SKU: dict[str, float] = {it["sku"]: float(it["cost"]) for it in CATALOG}
 
 
 def _norm(s: str) -> str:
@@ -206,6 +207,13 @@ def cost_of(product: str, spec: str = "") -> float | None:
     return item["cost"] if item else None
 
 
+def cost_for_sku(sku: str) -> float | None:
+    """Our cost per kit. Only an at-cost code (core.deals.AT_COST_CODES) ever
+    quotes this to anyone — it is not a price tier, it is the floor of the
+    business, and the number is the same whichever warehouse ships."""
+    return _COST_BY_SKU.get((sku or "").strip().upper())
+
+
 def sells_at(sku: str, warehouse: str) -> bool:
     """Whether a warehouse stocks a SKU at all."""
     key = (sku or "").strip().upper()
@@ -218,13 +226,34 @@ def us_skus() -> list[str]:
 
 # ── Prompt text ──────────────────────────────────────────────────────────────
 
-def get_catalog_text(warehouse: str = DEFAULT_WAREHOUSE) -> str:
+def get_catalog_text(warehouse: str = DEFAULT_WAREHOUSE, at_cost: bool = False) -> str:
     """The pricing table injected into Lily's prompt.
 
     China: all three tier prices per row, because Lily may now quote the
     breakpoints out loud. US: one price plus the single-vial price, since that
     warehouse has no tiers and is the only one that sells vials.
+
+    `at_cost` swaps every price for our cost — ONE column, with cents, no tiers
+    — for a buyer holding an at-cost code (core.deals). The product list is the
+    same as the warehouse's normal one, so a China-only SKU is still absent
+    from the US table: the code changes the price, never what a warehouse
+    stocks.
     """
+    if at_cost and warehouse == WAREHOUSE_US:
+        lines = ["US WAREHOUSE — INTERNAL AT-COST PRICES. One price at any quantity.",
+                 "Product | Per vial | Per kit (10 vials)", "-" * 62]
+        for r in US_CATALOG:
+            c = _COST_BY_SKU[r["sku"]]
+            lines.append(f"{r['sheet_label']} | ${c / 10:.2f} | ${c:.2f}")
+        return "\n".join(lines)
+    if at_cost:
+        lines = ["CHINA WAREHOUSE — INTERNAL AT-COST PRICES. One price per kit (10 vials), "
+                 "any quantity, no tiers.",
+                 "Product | Spec | Per kit", "-" * 60]
+        for item in CATALOG:
+            lines.append(f"{item['product']} | {item['spec']} | ${float(item['cost']):.2f}")
+        return "\n".join(lines)
+
     if warehouse == WAREHOUSE_US:
         lines = ["US WAREHOUSE — one price at any quantity. Single vials available.",
                  "Product | Per vial | Per kit (10 vials)", "-" * 62]

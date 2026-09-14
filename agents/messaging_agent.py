@@ -20,7 +20,7 @@ from core.airtable_client import airtable
 # reference — they read as if the escalation threshold lived in core/pricing.py
 # when it was really prose in the prompt, which is its own kind of bug.
 from core.pricing import (
-    get_catalog_text, get_price_list_messages, get_price, tier_for_kits,
+    get_catalog_text, get_price_list_messages, get_price, tier_for_kits, cost_of,
     WAREHOUSE_CHINA, WAREHOUSE_US, WAREHOUSES, DEFAULT_WAREHOUSE,
 )
 from core.price_image import get_sku
@@ -89,8 +89,32 @@ def _white_label_table() -> str:
     return table_text()
 
 
-def _build_order_prompt(warehouse: str = DEFAULT_WAREHOUSE) -> str:
-    catalog = get_catalog_text(warehouse)
+# Appended to the order prompt for a buyer holding an at-cost code
+# (core.deals.AT_COST_CODES). It comes LAST so it overrides the tier, breakpoint
+# and shipping rules above it. Lily is never told the word "cost": to her these
+# are simply this buyer's prices, which keeps her from apologising for them or
+# calling them a discount.
+_AT_COST_PROMPT = """
+
+THIS BUYER HAS AN APPROVED INTERNAL PRICE CODE — this overrides the pricing and shipping rules above:
+- The catalog above shows THIS BUYER'S prices. Quote them exactly as written, cents included
+  (e.g. "$28.26 per kit"). Do not round, do not call them a discount, do not say "cost", and do
+  not compare them with any other price.
+- There are NO quantity tiers and NO breakpoints for this buyer — one price at any quantity.
+  Never mention 25-kit or 100-kit pricing.
+- SHIPPING IS FREE for this buyer, from either warehouse, standard or expedited. Say the
+  shipping fee is $0 and the final total is the product total. Still ask standard or
+  expedited from China (it decides how the parcel travels), and still ask which warehouse.
+- Do NOT use action "send_price_list" for this buyer — the spreadsheet carries the wrong
+  prices. If they ask for the full list, the system sends their list; just put a one-line warm
+  reply in reply_message and use action "collect".
+- Everything else is unchanged: same products, same warehouses, same order flow, same
+  payment (BTC or USDT), name and address after payment.
+"""
+
+
+def _build_order_prompt(warehouse: str = DEFAULT_WAREHOUSE, at_cost: bool = False) -> str:
+    catalog = get_catalog_text(warehouse, at_cost=at_cost)
     media_catalog = get_media_catalog_text()
     proof_section = (
         "PROOF / LEGITIMACY MEDIA — you can send real photos/videos of our lab and product:\n"
@@ -123,6 +147,11 @@ def _build_order_prompt(warehouse: str = DEFAULT_WAREHOUSE) -> str:
         "- If a customer gives you a discount code, just acknowledge it warmly — the system\n"
         "  recognises the code and takes over the order itself.\n\n"
     )
+    body = _order_prompt_body(catalog, white_label_section, proof_section)
+    return body + _AT_COST_PROMPT if at_cost else body
+
+
+def _order_prompt_body(catalog: str, white_label_section: str, proof_section: str) -> str:
     return f"""You are a sales representative for Northline Group, a research peptide LAB in China.
 We are the lab — the manufacturer. We make and ship the product ourselves, direct from China.
 
@@ -418,6 +447,95 @@ def set_warehouse(phone: str, warehouse: str) -> None:
         _warehouse[phone] = warehouse
 
 
+# ── At-cost codes (core.deals.AT_COST_CODES) ─────────────────────────────────
+# Per phone: the at-cost code this buyer has presented and not yet spent. The
+# in-memory copy dies with every deploy, so the durable copy is the lead's
+# `pricing_code` field, read back on demand. Redemption is not stored anywhere
+# here — it is derived exactly as for deals: a PAID order carrying the code in
+# `promo_code` (is_promo_redeemed), which survives deploys and cannot be
+# resurrected by the awaiting-order recovery path.
+_at_cost: dict[str, str] = {}
+_LEAD_PRICING_FIELD = "pricing_code"
+_pricing_field_ok = True   # flips False once Leads is seen to lack the field
+
+
+def get_at_cost_code(phone: str, existing_lead: dict | None = None) -> str:
+    """The at-cost code in force for this phone, or "" — meaning sheet prices.
+
+    FAILS TOWARD THE SHEET PRICE. If the redemption check cannot be made, the
+    buyer gets ordinary pricing for that turn rather than a cost price the
+    code may no longer entitle them to; the next message tries again.
+    """
+    from core.deals import get_at_cost_code as _lookup
+    code = (_at_cost.get(phone) or "").strip().upper()
+    if not code and existing_lead:
+        code = ((existing_lead.get("fields") or {}).get(_LEAD_PRICING_FIELD) or "").strip().upper()
+    if not code or not _lookup(code):
+        return ""
+    try:
+        if airtable.is_promo_redeemed(code):
+            _at_cost.pop(phone, None)
+            return ""
+    except Exception as e:
+        print(f"[AtCost] redemption check failed for {phone} ({code}): {e!r} — sheet price this turn")
+        return ""
+    _at_cost[phone] = code
+    return code
+
+
+def _write_pricing_code(lead_id: str, code: str) -> None:
+    """Durable copy of the unlock on the lead. Degrades like the `warehouse`
+    field on Orders: if Leads has no `pricing_code` column, say so once and
+    carry on in memory only — a missing column must not block an order."""
+    global _pricing_field_ok
+    if not _pricing_field_ok:
+        return
+    try:
+        airtable.leads.update(lead_id, {_LEAD_PRICING_FIELD: code})
+    except Exception as e:
+        if "UNKNOWN_FIELD_NAME" in str(e):
+            _pricing_field_ok = False
+            print(f"[AtCost] Leads has no '{_LEAD_PRICING_FIELD}' field — add it (single line "
+                  f"text) so an at-cost unlock survives a deploy. Continuing in memory.")
+        else:
+            print(f"[AtCost] lead update failed: {e!r}")
+
+
+def _arm_at_cost(phone: str, code: str, existing_lead: dict | None) -> str:
+    """Buyer presented an at-cost code. Validate, remember, and confirm — the
+    ORDER itself is not touched; it proceeds through the ordinary flow."""
+    from core.deals import get_at_cost_code as _lookup
+    spec = _lookup(code)
+    if not spec:
+        return ""
+    try:
+        if spec.get("one_time") and airtable.is_promo_redeemed(spec["code"]):
+            _notify_operators(f"[CODE REUSE] {phone} presented {spec['code']} but it is "
+                              f"already redeemed.")
+            return ("Thank you dear! That code has already been used for an order. "
+                    "Let me check with my manager and come back to you very quick 😊")
+    except Exception as e:
+        print(f"[AtCost] redemption check failed for {phone}: {e!r} — not arming")
+        return "One moment dear, let me check that code for you 🙏"
+    _at_cost[phone] = spec["code"]
+    lead = existing_lead
+    if not lead:
+        try:
+            airtable.create_lead(name=phone, email="", phone=phone, buyer_type="Individual",
+                                 source="Direct", notes=f"Code {spec['code']}")
+            lead = airtable.find_lead_by_phone(phone)
+        except Exception as e:
+            print(f"[AtCost] lead create failed: {e!r}")
+    if lead:
+        _write_pricing_code(lead["id"], spec["code"])
+    print(f"[AtCost] {phone} armed {spec['code']}")
+    _notify_operators(f"[AT-COST CODE] {phone} activated {spec['code']}: every line prices at "
+                      f"cost and shipping is $0 until an order carrying it is paid.")
+    return ("Of course, dear 😊 Your code is on your account now, so your special pricing "
+            "applies to whatever you order. What would you like, dear — and shall we ship "
+            "from China or from our US warehouse?")
+
+
 # ── Order / payment helpers ──────────────────────────────────────────────────
 
 def _now_iso() -> str:
@@ -571,7 +689,8 @@ _SHIP_ASKS = {
 
 
 def _validate_line_items(line_items: list[dict],
-                         warehouse: str = DEFAULT_WAREHOUSE
+                         warehouse: str = DEFAULT_WAREHOUSE,
+                         at_cost: bool = False,
                          ) -> tuple[list[dict], bool, list[dict]]:
     """Build clean line items and price every one of them from the sheet.
 
@@ -606,6 +725,11 @@ def _validate_line_items(line_items: list[dict],
     A US buyer asking for a China-only product lands there too: 121 of our 151
     SKUs are not stocked in the US, `get_price` returns None for them, and the
     line is refused rather than silently sold at the China price.
+
+    `at_cost` (an at-cost code is in force, core.deals.AT_COST_CODES) swaps the
+    sheet price for our cost on every line. It changes the NUMBER only: the
+    sheet lookup still decides whether the warehouse sells the SKU at all, so a
+    China-only product is refused at the US warehouse exactly as before.
     """
     warehouse = warehouse if warehouse in WAREHOUSES else DEFAULT_WAREHOUSE
 
@@ -633,9 +757,11 @@ def _validate_line_items(line_items: list[dict],
     for c in clean:
         product, spec, kits = c["product"], c["spec"], c["kits"]
         sheet_pk = get_price(product, spec, total_kits, warehouse)
+        if sheet_pk is not None and at_cost:
+            sheet_pk = cost_of(product, spec)
         if sheet_pk is None:
             print(f"[Guardrail] UNPRICED line refused: {product!r} spec={spec!r} "
-                  f"kits={kits} warehouse={warehouse}")
+                  f"kits={kits} warehouse={warehouse} at_cost={at_cost}")
             unpriced.append({"product": product, "spec": spec, "kits": kits})
             continue
         if c["quoted"] > 0 and abs(c["quoted"] - sheet_pk) >= 0.01:
@@ -1227,6 +1353,7 @@ def handle_inbound(from_phone: str, body: str, name: str = "", media: list | Non
         _pending_handoffs.pop(from_phone, None)
         _pending_payments.pop(from_phone, None)
         _pending_deals.pop(from_phone, None)
+        _at_cost.pop(from_phone, None)
         _last_outbound.pop(from_phone, None)
         _sent_media.pop(from_phone, None)
         _warehouse.pop(from_phone, None)
@@ -1368,6 +1495,20 @@ def handle_inbound(from_phone: str, body: str, name: str = "", media: list | Non
                 save_conversation(from_phone, conversation)
                 return _r
             conversation.pop()
+        # An at-cost code arms cost pricing for this phone and otherwise leaves
+        # the flow alone. If the code came on its own, confirm it; if it came
+        # inside a message that also says what they want, arm silently and let
+        # the ordinary path answer that message with the new prices in force.
+        from core.deals import find_at_cost_code_in
+        _ac = find_at_cost_code_in(body)
+        if _ac and _ac != (_at_cost.get(from_phone) or ""):
+            _r = _arm_at_cost(from_phone, _ac, airtable.find_lead_by_phone(from_phone))
+            _rest = re.sub(re.escape(_ac), "", body, flags=re.I)
+            if _r and len(re.findall(r"[A-Za-z0-9]+", _rest)) < 4:
+                conversation.append({"role": "user", "content": body})
+                conversation.append({"role": "assistant", "content": _r})
+                save_conversation(from_phone, conversation)
+                return _r
 
     # ── Deal opened, waiting on the customer's coin choice ─────────────────────
     if stage == "deal_coin":
@@ -1681,10 +1822,17 @@ def _handle_ordering(phone: str, conversation: list[dict], existing_lead: dict |
     # and updates it (the "warehouse" field, when the buyer makes a choice).
     warehouse = get_warehouse(phone)
 
+    # An at-cost code in force (core.deals.AT_COST_CODES) changes three things
+    # in this function and nothing else: the catalog Lily quotes from, the
+    # price each line is validated at, and the shipping charge (0). The order
+    # then carries the code in `promo_code`, which is what spends it.
+    at_cost_code = get_at_cost_code(phone, existing_lead)
+    at_cost = bool(at_cost_code)
+
     # Generous ceiling: adaptive thinking tokens + a long multi-item order JSON must
     # both fit, or the line_items list gets truncated and products silently drop.
     response = claude.create(
-        system=_build_order_prompt(warehouse) + buyer_context,
+        system=_build_order_prompt(warehouse, at_cost=at_cost) + buyer_context,
         messages=conversation,
         max_tokens=2048,
     )
@@ -1698,11 +1846,17 @@ def _handle_ordering(phone: str, conversation: list[dict], existing_lead: dict |
     coin = (action_data.get("coin") or "").upper()
     notes = action_data.get("notes", "")
 
-    # Full catalog requested — send the spreadsheet only, no text
+    # Full catalog requested — send the spreadsheet only, no text. An at-cost
+    # buyer gets THEIR table as text instead: the spreadsheet is the customer
+    # sheet and would put the wrong numbers in front of them.
     if action == "send_price_list":
         try:
-            _send_price_list(phone, warehouse)
-            print(f"[MessagingAgent] Claude triggered price list send to {phone}")
+            if at_cost:
+                _send_at_cost_list(phone, warehouse)
+            else:
+                _send_price_list(phone, warehouse)
+            print(f"[MessagingAgent] Claude triggered price list send to {phone}"
+                  + (" (at-cost text)" if at_cost else ""))
         except Exception as e:
             print(f"[MessagingAgent] _send_price_list crashed: {e!r}")
         return ""
@@ -1735,7 +1889,7 @@ def _handle_ordering(phone: str, conversation: list[dict], existing_lead: dict |
     # or spelling we could not resolve, or a China-only SKU asked for at the US
     # warehouse. Both get a warm stall and a human, never a guessed price.
     if action in ("place", "confirm"):
-        items, corrected, unpriced = _validate_line_items(line_items, warehouse)
+        items, corrected, unpriced = _validate_line_items(line_items, warehouse, at_cost)
         if unpriced:
             bad = "; ".join(f"{u['kits']}x {u['product']} {u['spec']}".strip() for u in unpriced)
             print(f"[Guardrail] UNPRICED line(s) for {phone} — escalating to manual mode: {bad}")
@@ -1753,14 +1907,15 @@ def _handle_ordering(phone: str, conversation: list[dict], existing_lead: dict |
             # renegotiate in-voice; with fixed prices that just risks a fresh
             # wrong number.)
             quoted = "; ".join(f"{i['kits']}x {i['product']} {i['spec']}".strip() +
-                               f" at ${int(i['unit_price'])}/kit" for i in items)
+                               (f" at ${i['unit_price']:.2f}/kit" if at_cost
+                                else f" at ${int(i['unit_price'])}/kit") for i in items)
             print(f"[Guardrail] Sheet price differs from quote for {phone} — restating")
             return (f"Let me give you the exact numbers, dear 🙏 — {quoted}. "
                     f"That is our set price. Shall we go ahead?")
 
     # Finalize → create a pending order (awaiting payment) and send payment instructions
     if action == "place":
-        items, _, unpriced = _validate_line_items(line_items, warehouse)
+        items, _, unpriced = _validate_line_items(line_items, warehouse, at_cost)
         # Defence in depth. The ("place","confirm") block above already escalates
         # and returns, so this should be unreachable — but never build an order
         # from a partial basket if it ever is.
@@ -1774,8 +1929,11 @@ def _handle_ordering(phone: str, conversation: list[dict], existing_lead: dict |
             return reply or "What product and how many kits would you like, dear?"
         if coin not in ("USDT", "BTC"):
             return "Almost there, dear! We accept both BTC and USDT — which would you prefer to use?"
-        subtotal = sum(i["line_total"] for i in items)
-        total_usd = round(subtotal + _shipping_fee(shipping, subtotal, items, warehouse), 2)
+        subtotal = round(sum(i["line_total"] for i in items), 2)
+        # $0 shipping on an at-cost order (Jordan, 2026-09-13): Jason's freight
+        # is paid by the §32 payout, so charging it here would pay it twice.
+        ship_fee = 0 if at_cost else _shipping_fee(shipping, subtotal, items, warehouse)
+        total_usd = round(subtotal + ship_fee, 2)
 
         # Internal-only freight visibility. The customer's quote above is
         # untouched; this is so a money-losing order is VISIBLE at the moment it
@@ -1836,10 +1994,23 @@ def _handle_ordering(phone: str, conversation: list[dict], existing_lead: dict |
             print(f"[MessagingAgent] pending order create failed: {e!r}")
             return "Sorry dear, a small hiccup setting up your order — please try again in a moment."
         airtable.update_lead_status(lead_id, "Converted", notes=notes)
+        if at_cost:
+            # The code is spent by THIS order reaching 'paid' (is_promo_redeemed),
+            # so the order must carry it. If this write fails the order still
+            # stands — it is just not one-time any more — so shout, don't stall.
+            try:
+                airtable.orders.update(order["id"], {"promo_code": at_cost_code})
+            except Exception as e:
+                print(f"[AtCost] could not stamp {at_cost_code} on {ref}: {e!r}")
+                _notify_operators(f"[AT-COST · code not recorded] {ref} for {phone} was placed "
+                                  f"at cost under {at_cost_code} but the code could not be "
+                                  f"written to the order, so it is NOT spent. Fix the order's "
+                                  f"promo_code by hand.")
         _pending_payments[phone] = {"order_id": order["id"], "coin": coin, "expected": expected,
                                     "since": time.time() - 180, "charge_usd": charge_usd, "ref": ref}
         set_stage(phone, "awaiting_payment")
-        print(f"[MessagingAgent] Pending order {ref} ({order['id']}) — ${charge_usd} {coin}")
+        print(f"[MessagingAgent] Pending order {ref} ({order['id']}) — ${charge_usd} {coin}"
+              + (f" [AT COST · {at_cost_code}]" if at_cost else ""))
         # Send the wallet address as its OWN bare message (nothing else in the bubble)
         # so the customer can long-press → copy cleanly. Delayed a beat so it arrives
         # AFTER the instructions reply below.
@@ -1945,6 +2116,18 @@ PRICE_LIST_URLS = {
     WAREHOUSE_CHINA: PRICE_LIST_XLSX_URL,
     WAREHOUSE_US: PRICE_LIST_US_XLSX_URL,
 }
+
+
+def _send_at_cost_list(to: str, warehouse: str = DEFAULT_WAREHOUSE) -> None:
+    """The at-cost table as WhatsApp text, for a buyer holding an at-cost code.
+    Text, not the spreadsheet: the XLSX/PDF are the CUSTOMER sheets and there is
+    deliberately no at-cost artwork to send by mistake."""
+    from core.pricing import _chunk
+    warehouse = warehouse if warehouse in WAREHOUSES else DEFAULT_WAREHOUSE
+    lines = get_catalog_text(warehouse, at_cost=True).splitlines()
+    for part in _chunk(["*YOUR PRICES — " + ("US WAREHOUSE*" if warehouse == WAREHOUSE_US
+                                              else "CHINA WAREHOUSE*"), ""] + lines[3:]):
+        _send_to_prospect(to, part)
 
 
 def _send_price_list(to: str, warehouse: str = DEFAULT_WAREHOUSE) -> None:

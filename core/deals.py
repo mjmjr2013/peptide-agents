@@ -54,48 +54,6 @@ _DIEGO26_ITEMS = [
     ("KS10",   "KissPeptin-10",      "10mg",   1, 1),
 ]
 
-# ── USSTOCK26 ──────────────────────────────────────────────────────────────────
-# Daniel's own order (iMessage, 2026-09-11): opening stock for the US warehouse plus
-# a few kits for the AI test, placed AT COST as the final end-to-end test of the
-# warehouse + sticker flow before it runs for strangers. Not a customer — the money
-# is the company's — so there is no margin, no white label, no shipping line.
-#
-# $1,140 is Daniel's figure ("Total cost : $1,140"); the catalog's cost basis for
-# the same 62 kits is $1,135.90. Kept at HIS number because a deal total is set by
-# a human, not derived (§24) — the $4.10 is rounding on his sheet, not a discount.
-#
-# Two of his SKU labels are not catalog SKUs and were mapped, not guessed:
-#   "KLOW80" → KLOW  (BPC+TB+GHK+KPV 80mg — the only KLOW)
-#   "10AM"   → 5AM10 (5-Amino-1MQ 10mg; 50AM is the 50mg he also ordered)
-#
-# The order ships from Jason to the US warehouse. It hits every downstream flow a
-# paid order does — nightly manifest, weekly supplier bulk, and the §32 warehouse
-# payout (4 boxes / 8.19 kg gross ≈ $178 to Jason, once dry run is off). Nothing
-# goes to the sticker factory: that path is white-label only (`requires_artwork`).
-_USSTOCK26_ITEMS = [
-    # (sku, product, spec, kits, wl_kits)
-    ("RT20",   "Retatrutide",             "20mg",      6, 0),
-    ("RT100",  "Retatrutide",             "100mg",     1, 0),
-    ("TR10",   "Tirzepatide",             "10mg",      3, 0),
-    ("TR20",   "Tirzepatide",             "20mg",      3, 0),
-    ("SM10",   "Semaglutide",             "10mg",      3, 0),
-    ("KLOW",   "BPC+TB+GHK+KPV",          "80mg",      2, 0),   # Daniel wrote "KLOW80"
-    ("BC10",   "BPC-157",                 "10mg",      4, 0),
-    ("BT10",   "TB-500",                  "10mg",      2, 0),
-    ("MS10",   "MOTS-c",                  "10mg",      2, 0),
-    ("MS20",   "MOTS-c",                  "20mg",      4, 0),
-    ("MS40",   "MOTS-c",                  "40mg",      1, 0),
-    ("TSM10",  "Tesamorelin",             "10mg",      2, 0),
-    ("NJ1000", "NAD",                     "1000mg",    2, 0),
-    ("DS5",    "DSIP",                    "5mg",       6, 0),
-    ("50AM",   "5-Amino/MQ",              "50mg",      2, 0),
-    ("5AM10",  "5-Amino/MQ",              "10mg",      2, 0),   # Daniel wrote "10AM"
-    ("P41",    "PT-141",                  "10mg",      3, 0),
-    ("XA10",   "Semax",                   "10mg",      2, 0),
-    ("SK10",   "Selank",                  "10mg",      2, 0),
-    ("BAC10",  "Bacteriostatic Water",    "10ml",     10, 0),
-]
-
 DEALS: dict[str, dict] = {
     "DIEGO26": {
         "code": "DIEGO26",
@@ -110,19 +68,57 @@ DEALS: dict[str, dict] = {
                   "discounts. Add-on vials ship under Northline labels — Daniel arranges "
                   "those with Jason directly, they are NOT part of the factory job."),
     },
+}
+
+
+# ── At-cost codes ──────────────────────────────────────────────────────────────
+# A different kind of code from the deals above, and deliberately NOT in DEALS.
+# A deal fixes the BASKET and the TOTAL in advance. An at-cost code fixes nothing:
+# the holder goes through the ordinary flow — products, warehouse, coin, then
+# name and address after payment, exactly as a customer would — and every line
+# is priced at our COST instead of the sheet, with $0 shipping (Jordan,
+# 2026-09-13: Jason's freight is paid by the §32 payout, not by this order).
+#
+# It exists for one purpose: letting Daniel run real orders through Lily as
+# rehearsals, paid with the company's own money. Because it puts cost prices in
+# a chat, a code is one-time — spent once an order carrying it is paid, via the
+# same `promo_code` field and `is_promo_redeemed()` the deals use — and it must
+# never be given to a customer.
+#
+# USSTOCK26 started life (2026-09-13, same day) as a fixed 62-kit basket at
+# $1,140 for the US warehouse stock. Jordan reworked it into this the same
+# evening so Daniel enters the order himself and the run exercises the whole
+# agent, not just the payment step.
+AT_COST_CODES: dict[str, dict] = {
     "USSTOCK26": {
         "code": "USSTOCK26",
-        "label": "At-cost US warehouse stock — Daniel's end-to-end test",
-        "items": _USSTOCK26_ITEMS,
-        "items_total": 1140.00,     # Daniel's figure; catalog cost is $1,135.90
-        "white_label_fee": 0.00,    # Northline's own labels — nothing to print
-        "shipping": 0.00,           # internal stock move; Jason is paid via §32 instead
-        "requires_artwork": False,  # no artwork step, straight to payment instructions
-        "one_time": True,           # burns once the order is paid
-        "notes": ("Daniel's own at-cost order for US warehouse stock. Not a customer "
-                  "price — do not quote it, compare it, or reuse it."),
+        "label": "Daniel — at-cost rehearsal order",
+        "one_time": True,
+        "notes": ("Internal. Prices every line at cost, shipping $0. Not a customer "
+                  "code — never quote it, share it, or reuse it."),
     },
 }
+
+# A code must be exactly one kind: a basket deal opens a fixed order, an at-cost
+# code changes how the ordinary flow prices. Both matching the same string would
+# race in handle_inbound.
+assert not (set(DEALS) & set(AT_COST_CODES)), "a code cannot be both a deal and at-cost"
+
+
+def get_at_cost_code(code: str) -> dict | None:
+    """Look up an at-cost code (case-insensitive). None if unknown."""
+    return AT_COST_CODES.get(normalize(code))
+
+
+def find_at_cost_code_in(text: str) -> str | None:
+    """An at-cost code mentioned anywhere in a message, else None. Same word-ish
+    boundary rule as find_code_in()."""
+    import re
+    up = (text or "").upper()
+    for code in AT_COST_CODES:
+        if re.search(rf"(?<![A-Z0-9]){re.escape(code)}(?![A-Z0-9])", up):
+            return code
+    return None
 
 
 def normalize(code: str) -> str:
