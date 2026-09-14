@@ -568,6 +568,70 @@ def _wallet_address(coin: str) -> str:
         settings.btc_address if coin.upper() == "BTC" else "")
 
 
+def _order_paid_onchain(order: dict):
+    """Has this awaiting order actually been paid on-chain already?
+
+    Returns the verify dict if a matching payment is found, "" if the chain was
+    checked and no match exists, or None if the check itself could not run. The
+    three states matter to the caller: only "" is safe to supersede on. See
+    _supersede_unless_paid / HANDOFF §33e bug 1.
+    """
+    f = order.get("fields", {})
+    coin = (f.get("coin") or "").upper()
+    expected = float(f.get("expected_amount") or 0)
+    if not coin or not expected:
+        return ""   # nothing to match on — cannot have been paid-by-amount
+    try:
+        others = [float(x["fields"].get("expected_amount") or 0)
+                  for x in airtable.get_awaiting_orders()
+                  if x["id"] != order["id"]
+                  and (x["fields"].get("coin") or "").upper() == coin]
+    except Exception:
+        others = []
+    try:
+        res = crypto_verify.verify_payment(coin, _wallet_address(coin), expected,
+                                           time.time() - 14 * 86400, other_amounts=others)
+        return res if res else ""
+    except Exception as e:
+        print(f"[MessagingAgent] on-chain paid-check failed for {f.get('order_ref')}: {e!r}")
+        return None
+
+
+def _supersede_unless_paid(prev: dict | None, log_prefix: str = "MessagingAgent") -> bool:
+    """Mark a prior awaiting order `failed` — UNLESS it has already been paid.
+
+    A customer placing a SECOND order must never lose (or pay twice for) the
+    first (HANDOFF §33e, bug 1). The supersede guard exists so a stale unique
+    amount can't cross-match later, and that reasoning only applies to an
+    UNPAID order — a paid one has already consumed its amount. So: fail it only
+    when the chain says it is unpaid; if it is paid, or if we cannot tell, leave
+    it awaiting (the payment watcher confirms and notifies it on its own cycle)
+    and alert ops. Fails toward keeping money, never toward destroying a paid
+    order. Returns True iff it superseded (failed) the order.
+    """
+    if not prev:
+        return False
+    ref = prev.get("fields", {}).get("order_ref", "?")
+    state = _order_paid_onchain(prev)
+    if state:  # a verify dict — it is paid
+        _notify_operators(
+            f"[MULTI-ORDER] {ref} is already PAID on-chain "
+            f"({state.get('amount')} {prev['fields'].get('coin')}) — NOT superseding it. "
+            f"The customer placed another order; both are live and will confirm normally.")
+        print(f"[{log_prefix}] {ref} already paid on-chain — kept, not superseded")
+        return False
+    if state is None:  # could not check — do not risk failing a paid order
+        _notify_operators(
+            f"[SUPERSEDE · unverifiable] Could not check the chain before superseding "
+            f"{ref}; left it awaiting rather than risk failing a paid order. If it is "
+            f"genuinely abandoned, fail it by hand.")
+        print(f"[{log_prefix}] {ref} paid-check unavailable — kept awaiting, not superseded")
+        return False
+    airtable.orders.update(prev["id"], {"payment_status": "failed"})
+    print(f"[{log_prefix}] Superseded stale awaiting order {ref}")
+    return True
+
+
 def _order_ref() -> str:
     return f"NL-{airtable.week_tag().replace('-', '')}-{secrets.token_hex(2).upper()}"
 
@@ -1216,10 +1280,7 @@ def _place_deal_order(phone: str, conversation: list[dict],
     for finder in (lambda: airtable.get_open_promo_order(deal["code"]),
                    lambda: airtable.get_awaiting_order_for_phone(phone)):
         try:
-            prev = finder()
-            if prev:
-                airtable.orders.update(prev["id"], {"payment_status": "failed"})
-                print(f"[Deal] superseded stale order {prev['fields'].get('order_ref')}")
+            _supersede_unless_paid(finder(), log_prefix="Deal")
         except Exception as e:
             print(f"[Deal] supersede check failed: {e!r}")
 
@@ -1999,11 +2060,7 @@ def _handle_ordering(phone: str, conversation: list[dict], existing_lead: dict |
         # changed mind after instructions went out): mark it failed so its unique
         # amount can't be matched and redeploy recovery can't resurrect it.
         try:
-            prev = airtable.get_awaiting_order_for_phone(phone)
-            if prev:
-                airtable.orders.update(prev["id"], {"payment_status": "failed"})
-                print(f"[MessagingAgent] Superseded stale awaiting order "
-                      f"{prev['fields'].get('order_ref')} for {phone}")
+            _supersede_unless_paid(airtable.get_awaiting_order_for_phone(phone))
         except Exception as e:
             print(f"[MessagingAgent] supersede check failed: {e!r}")
 
