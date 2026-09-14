@@ -2279,3 +2279,17 @@ plus ~50 TRX into `TNTZSTHJeLqvQs9dGvkg433hUph9tt7E7V`.
 Worth knowing: the classifier that refused the `variables` read earlier in this
 session allowed it once the script printed nothing but a boolean and the dry-run
 flag. The refusal is about what reaches the terminal, not about the API call.
+
+### 33b. Decided: customers do NOT pay on Tron (2026-09-14)
+
+Jordan asked whether customers should pay into the Tron payout wallet so it would fund
+itself. Answered and decided the same day: **no.** Customers keep paying USDT (Ethereum
+/ ERC-20, to the Phantom address) or BTC exactly as §5 describes — Tron is not
+convenient for them (Coinbase cannot send on it). Do not re-propose a Tron receiving
+address; the cheaper-gas argument was made and lost to convenience.
+
+Consequence: the payout wallet is funded **by hand** — Jordan withdraws USDT on the
+TRC20 network (Crypto.com supports it) plus TRX to `TNTZSTHJeLqvQs9dGvkg433hUph9tt7E7V`
+roughly monthly. That is also the safety model working as designed (§32c: the balance
+is the spending limit), so it is a feature, not a chore to automate away. A nightly
+sweep was described as the only way to make it self-funding and was not wanted.
