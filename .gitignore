@@ -14,3 +14,4 @@ venv/
 # Wrangler local build cache / credentials
 .wrangler/
 sticker_list_preview.html
+sticker_list_preview.pdf

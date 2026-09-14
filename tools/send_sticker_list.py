@@ -1,26 +1,24 @@
 #!/usr/bin/env python3
-"""Send the sticker factory a simple vial-label print list for the current orders.
+"""Send the sticker factory a vial-label print list for the current orders, as a PDF.
 
-Manifest-style: one row per SKU — code, quantity (vials), and the label image
-itself, inline. No spreadsheet, no zip. The factory reads the picture and prints
-that many of it.
+One row per SKU — code, product, quantity (vials), and the label image itself. The
+factory asked for a PDF file (2026-09-14), so the list is built as a PDF and emailed
+as an attachment. No order numbers — the factory does not need them.
 
-"Current orders" = paid, non-legacy, not yet shipped (tracking not sent) — the
-same "still needs fulfilling" set the warehouse manifest works from.
+"Current orders" = paid, non-legacy, not yet shipped (tracking not sent), not yet
+sticker-sent — the same "still needs fulfilling" set the warehouse manifest works from.
 
-    python3 -m tools.send_sticker_list            # writes a preview HTML to look at
-    python3 -m tools.send_sticker_list --send      # emails it to FACTORY_EMAIL
+    python3 -m tools.send_sticker_list            # writes a preview PDF to look at
+    python3 -m tools.send_sticker_list --send      # emails the PDF to FACTORY_EMAIL
 
-Images ride inline (CID in the email, data: URIs in the preview). Reusable: run it
-again whenever a new batch of orders needs labels.
+The PDF is built with Pillow (already a dependency) so nothing new has to install on
+Railway. Reusable: run it again whenever a new batch of orders needs labels.
 """
 from __future__ import annotations
-import base64
-import mimetypes
+import io
 import smtplib
 import sys
 from email.message import EmailMessage
-from email.utils import make_msgid
 from pathlib import Path
 
 from config import settings
@@ -31,8 +29,8 @@ from agents.warehouse_payout import _order_items
 
 def _current_label_needs():
     """(order_ids, rows) where rows = [{sku, product, spec, kits, vials, img_path}].
-    order_ids is what to mark stickers_sent after a successful send. The factory
-    email itself does NOT name the orders — it does not need them."""
+    order_ids is what to mark stickers_sent after a successful send. The list itself
+    never names the orders — the factory does not need them."""
     orders = airtable.get_orders_needing_stickers()
     order_ids, agg = [], {}
     for o in orders:
@@ -54,57 +52,98 @@ def _current_label_needs():
     return order_ids, rows
 
 
-def _render_html(rows, img_src) -> str:
-    """img_src(row) -> the value for <img src=...>. Lets the email use cid: and the
-    preview use a data: URI from the same template."""
-    trs = []
-    for r in rows:
-        src = img_src(r)
-        img = (f'<img src="{src}" alt="{r["sku"]}" '
-               f'style="max-width:240px;height:auto;border:1px solid #ddd;border-radius:4px">'
-               if src else '<span style="color:#b00">no artwork on file</span>')
-        trs.append(
-            f'<tr>'
-            f'<td style="padding:10px 12px;font:600 15px system-ui,Arial;white-space:nowrap">{r["sku"]}</td>'
-            f'<td style="padding:10px 12px;font:14px system-ui,Arial;color:#333">{r["product"]} {r["spec"]}</td>'
-            f'<td style="padding:10px 12px;font:600 16px system-ui,Arial;text-align:center;white-space:nowrap">{r["vials"]}</td>'
-            f'<td style="padding:10px 12px">{img}</td>'
-            f'</tr>')
+# ── PDF ──────────────────────────────────────────────────────────────────────
+# US Letter at 150 dpi. Built with Pillow: each page is a raster image, and the
+# label artwork is pasted straight in, so what the factory prints is exactly the
+# artwork on file — no font substitution or vector redraw to go wrong.
+_PAGE_W, _PAGE_H = 1275, 1650
+_MARGIN = 60
+_COL_CODE, _COL_PROD, _COL_QTY, _COL_IMG = 60, 250, 640, 800
+_IMG_W = 400                      # label drawn this wide; height keeps aspect
+_ROW_H = 150
+
+
+def _font(size: int, bold: bool = False):
+    from PIL import ImageFont
+    from matplotlib import font_manager
+    prop = font_manager.FontProperties(family="DejaVu Sans",
+                                       weight="bold" if bold else "normal")
+    try:
+        return ImageFont.truetype(font_manager.findfont(prop), size)
+    except Exception:
+        return ImageFont.load_default()
+
+
+def build_sticker_pdf(rows: list[dict]) -> bytes:
+    from PIL import Image, ImageDraw
+    f_title = _font(34, bold=True)
+    f_sub = _font(20)
+    f_head = _font(20, bold=True)
+    f_code = _font(24, bold=True)
+    f_cell = _font(20)
+    f_qty = _font(26, bold=True)
     total_v = sum(r["vials"] for r in rows)
-    return f"""\
-<div style="font:14px system-ui,Arial;color:#111;max-width:760px">
-  <h2 style="margin:0 0 4px">Northline Group — vial label print list</h2>
-  <p style="margin:0 0 16px;color:#444">{len(rows)} codes · {total_v} vial labels total.
-     Please print the quantity shown of each label below (each kit = 10 vials).</p>
-  <table style="border-collapse:collapse;width:100%">
-    <thead><tr style="background:#f3f4f6;text-align:left">
-      <th style="padding:10px 12px;font:600 13px system-ui,Arial">Code</th>
-      <th style="padding:10px 12px;font:600 13px system-ui,Arial">Product</th>
-      <th style="padding:10px 12px;font:600 13px system-ui,Arial;text-align:center">Qty (vials)</th>
-      <th style="padding:10px 12px;font:600 13px system-ui,Arial">Label</th>
-    </tr></thead>
-    <tbody>{''.join(trs)}</tbody>
-    <tfoot><tr style="background:#f3f4f6">
-      <td colspan="2" style="padding:10px 12px;font:600 14px system-ui,Arial">TOTAL</td>
-      <td style="padding:10px 12px;font:700 16px system-ui,Arial;text-align:center">{total_v}</td>
-      <td></td></tr></tfoot>
-  </table>
-  <p style="margin:16px 0 0;color:#444">Please confirm you can print these and the timeline. Thank you.</p>
-</div>"""
 
+    pages: list[Image.Image] = []
+    img = draw = None
+    y = 0
 
-def _data_uri(path: Path) -> str:
-    if not path:
-        return ""
-    ct = mimetypes.guess_type(str(path))[0] or "image/png"
-    return f"data:{ct};base64," + base64.b64encode(path.read_bytes()).decode()
+    def new_page(first: bool):
+        nonlocal img, draw, y
+        img = Image.new("RGB", (_PAGE_W, _PAGE_H), "white")
+        draw = ImageDraw.Draw(img)
+        y = _MARGIN
+        if first:
+            draw.text((_MARGIN, y), "Northline Group — vial label print list", font=f_title, fill="black")
+            y += 46
+            draw.text((_MARGIN, y),
+                      f"{len(rows)} codes · {total_v} vial labels total · each kit = 10 vials",
+                      font=f_sub, fill="#444444")
+            y += 40
+        # column header
+        draw.rectangle([_MARGIN, y, _PAGE_W - _MARGIN, y + 34], fill="#f0f1f3")
+        draw.text((_COL_CODE + 6, y + 7), "Code", font=f_head, fill="black")
+        draw.text((_COL_PROD, y + 7), "Product", font=f_head, fill="black")
+        draw.text((_COL_QTY, y + 7), "Qty (vials)", font=f_head, fill="black")
+        draw.text((_COL_IMG, y + 7), "Label", font=f_head, fill="black")
+        y += 44
+        pages.append(img)
+
+    new_page(True)
+    for r in rows:
+        if y + _ROW_H > _PAGE_H - _MARGIN:
+            new_page(False)
+        cy = y + _ROW_H // 2
+        draw.text((_COL_CODE + 6, cy - 12), r["sku"], font=f_code, fill="black")
+        draw.text((_COL_PROD, cy - 10), f"{r['product']} {r['spec']}", font=f_cell, fill="#222222")
+        draw.text((_COL_QTY + 20, cy - 13), str(r["vials"]), font=f_qty, fill="black")
+        if r.get("img_path"):
+            try:
+                label = Image.open(r["img_path"]).convert("RGB")
+                w = _IMG_W
+                h = int(label.height * (w / label.width))
+                label = label.resize((w, h))
+                img.paste(label, (_COL_IMG, y + (_ROW_H - h) // 2))
+            except Exception:
+                draw.text((_COL_IMG, cy - 10), "(artwork unavailable)", font=f_cell, fill="#b00000")
+        else:
+            draw.text((_COL_IMG, cy - 10), "no artwork on file", font=f_cell, fill="#b00000")
+        draw.line([_MARGIN, y + _ROW_H, _PAGE_W - _MARGIN, y + _ROW_H], fill="#dddddd")
+        y += _ROW_H
+
+    buf = io.BytesIO()
+    pages[0].save(buf, format="PDF", save_all=True, append_images=pages[1:], resolution=150.0)
+    return buf.getvalue()
 
 
 def preview() -> Path:
     order_ids, rows = _current_label_needs()
-    html = _render_html(rows, lambda r: _data_uri(r["img_path"]))
-    out = Path(__file__).resolve().parent.parent / "sticker_list_preview.html"
-    out.write_text(html)
+    if not rows:
+        print("no current orders need labels — nothing to preview")
+        return None
+    pdf = build_sticker_pdf(rows)
+    out = Path(__file__).resolve().parent.parent / "sticker_list_preview.pdf"
+    out.write_bytes(pdf)
     total_v = sum(r["vials"] for r in rows)
     print(f"{len(order_ids)} order(s), {len(rows)} codes, {total_v} vial labels")
     print(f"preview written: {out}")
@@ -121,33 +160,20 @@ def send() -> bool:
         print("[factory] not configured (GMAIL_USER/GMAIL_APP_PASSWORD/FACTORY_EMAIL)")
         return False
 
-    cids = {}
-    def img_src(r):
-        if not r["img_path"]:
-            return ""
-        cid = make_msgid(domain="northline")
-        cids[r["sku"]] = (cid, r["img_path"])
-        return f"cid:{cid[1:-1]}"   # src uses the id without the angle brackets
-
-    html = _render_html(rows, img_src)
     total_v = sum(r["vials"] for r in rows)
+    pdf = build_sticker_pdf(rows)
 
     msg = EmailMessage()
     msg["Subject"] = f"Northline Group — vial label print list ({len(rows)} codes, {total_v} labels)"
     msg["From"] = settings.gmail_user
     msg["To"] = ", ".join(recipients)
     msg.set_content(
-        f"Vial label print list. {len(rows)} codes, {total_v} vial labels "
-        "(each kit = 10 vials). This email is best viewed as HTML — it shows each "
-        "label image with the quantity to print.")
-    msg.add_alternative(html, subtype="html")
-
-    html_part = msg.get_payload()[1]
-    for sku, (cid, path) in cids.items():
-        ct = mimetypes.guess_type(str(path))[0] or "image/png"
-        maintype, subtype = ct.split("/", 1)
-        html_part.add_related(path.read_bytes(), maintype=maintype,
-                              subtype=subtype, cid=cid, filename=f"{sku}.png")
+        f"Please find attached the vial label print list — {len(rows)} codes, "
+        f"{total_v} vial labels (each kit = 10 vials). Each row shows the label image "
+        f"and how many to print. Please confirm you can print these and the timeline. "
+        f"Thank you.")
+    msg.add_attachment(pdf, maintype="application", subtype="pdf",
+                       filename="northline_sticker_list.pdf")
 
     try:
         with smtplib.SMTP("smtp.gmail.com", 587, timeout=45) as s:
@@ -155,7 +181,7 @@ def send() -> bool:
             s.login(settings.gmail_user, settings.gmail_app_password)
             s.send_message(msg)
         airtable.mark_stickers_sent(order_ids)
-        print(f"[factory] sent sticker list to {', '.join(recipients)} "
+        print(f"[factory] sent sticker list PDF to {', '.join(recipients)} "
               f"({len(order_ids)} order(s), {len(rows)} codes, {total_v} labels); "
               f"orders marked stickers_sent")
         return True
