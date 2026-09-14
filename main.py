@@ -78,6 +78,15 @@ def run_report_scheduler():
             if now.weekday() == 6 and now.hour == 0 and last_bulk_week != day:  # Sunday 00:xx
                 print(f"[Main/Reports] weekly supplier bulk {day}:", run_supplier_bulk())
                 last_bulk_week = day
+                # Same weekly beat as the supplier bulk: email the sticker factory
+                # the vial-label print list for the week's orders (HANDOFF §33i).
+                # State-based (orders NOT stickers_sent), so a missed Sunday just
+                # rolls into the next run — nothing is dropped.
+                try:
+                    from tools.send_sticker_list import send as send_sticker_list
+                    print(f"[Main/Reports] weekly sticker list {day}:", send_sticker_list())
+                except Exception as e:
+                    print(f"[Main/Reports] weekly sticker list FAILED {day}: {e!r}")
             # Health: hourly Claude canary; daily Twilio balance check (see health_monitor.py)
             if last_canary_hour != hour:
                 check_claude()
@@ -244,6 +253,23 @@ def start_webhook_server(port: int = 5000):
             from config import settings
             tok = req.values.get("token", "")
             return bool(settings.manifest_token) and tok == settings.manifest_token
+
+        @app.route("/send-stickers", methods=["POST"])
+        def send_stickers():
+            """Trigger the sticker-factory email on demand — the SAME send as the
+            weekly job, so it selects paid/non-legacy/unshipped orders not yet
+            stickers_sent, emails the factory, and marks them. Token-guarded like
+            /manifest. POST so it can't be triggered by a crawler following a link
+            (HANDOFF §33i)."""
+            from flask import request, jsonify, abort
+            if not _manifest_authorized(request):
+                abort(403)
+            try:
+                from tools.send_sticker_list import send as send_sticker_list
+                ok = send_sticker_list()
+            except Exception as e:
+                return jsonify({"sent": False, "error": repr(e)}), 500
+            return jsonify({"sent": bool(ok)}), (200 if ok else 500)
 
         @app.route("/manifest")
         def manifest_page():

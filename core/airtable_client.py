@@ -270,6 +270,16 @@ class AirtableClient:
         """Paid orders not yet sent to the warehouse on a manifest (daily cadence)."""
         return self.orders.all(formula="AND({payment_status}='paid',NOT({manifested}))")
 
+    def get_orders_needing_stickers(self) -> list[dict]:
+        """Paid, non-legacy orders whose vial-label list has not yet gone to the
+        sticker factory AND that have not shipped. The tracking-not-sent clause keeps
+        the FIRST run from sweeping the whole back catalogue of already-shipped orders
+        the way an unbounded flag would; `stickers_sent` then prevents re-sending
+        across weekly runs (mirrors bulk_ordered / manifested)."""
+        return self.orders.all(formula=(
+            "AND({payment_status}='paid',NOT({legacy_warehouse}),"
+            "NOT({tracking_sent}),NOT({stickers_sent}))"))
+
     # Orders flagged `legacy_warehouse` predate the Jason handoff and are being
     # finished by the previous rep off-system, so they stay off his manifest and
     # daily email. Pass include_legacy=True to see them anyway (see /manifest?legacy=1).
@@ -660,6 +670,13 @@ class AirtableClient:
                 self.orders.update(oid, {"manifested": True})
             except Exception as e:
                 print(f"[airtable] mark_manifested {oid} failed: {e}")
+
+    def mark_stickers_sent(self, order_ids: list[str]) -> None:
+        for oid in order_ids:
+            try:
+                self.orders.update(oid, {"stickers_sent": True})
+            except Exception as e:
+                print(f"[airtable] mark_stickers_sent {oid} failed: {e}")
 
     def get_items_for_order(self, order_record: dict) -> list[dict]:
         ids = order_record["fields"].get("Order Items", [])
