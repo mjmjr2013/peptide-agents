@@ -4,10 +4,11 @@ Paste this into a fresh Claude Code session (run from `~/peptide-agents`) to con
 It describes the live WhatsApp sales agent, the new order/payment/fulfillment system,
 how to deploy/debug, and what's outstanding. No secret tokens are stored here.
 
-**Last updated 2026-09-13. Read §33c FIRST — it is the newest.** §33c is USSTOCK26 as it now
-works: an at-cost CODE that arms cost pricing through the ordinary order flow (deployed `2ac09c1`).
-§33 is the fixed-basket version it replaced, plus the group-chat readout; §33a–b are the Tron payout
-(Jason's address confirmed in Railway, customers stay on ERC-20/BTC, wallet funding paused).
+**Last updated 2026-09-13. Read §33d FIRST — it is the newest.** §33d is USSTOCK26 as it now
+works (deployed `e2cd77f`): an at-cost code locked to Daniel's phone, reusable, normal flat
+shipping, through the ordinary order flow. §33c is the mechanism it refines; §33 the fixed basket it
+replaced, plus the group-chat readout; §33a–b are the Tron payout (Jason's address confirmed in
+Railway, customers stay on ERC-20/BTC, wallet funding paused).
 
 **§30k and below are history.** §30i restyles the manifest rows
 as the workbook table (sticker on the right) and makes the vial photo per PACKAGE, matching the
@@ -2378,3 +2379,38 @@ SKUs, the validator pricing at cost only when told and still refusing DSIP at th
 warehouse, and arming / read-back after a deploy / death on redemption / fail-toward-
 sheet / degrade-without-the-field, all with Airtable faked. Suite: **1240 passed, 6
 skipped.** Deployed by SHA per §10 — SUCCESS, `2ac09c1` running, `/health` 200.
+
+## 33d. USSTOCK26: reusable, phone-locked, flat shipping — DEPLOYED `e2cd77f` (2026-09-13)
+
+Third and final shape of the code today. Jordan: *"don't do free shipping. Charge the
+flat $95. Also don't make it single use. But have it to where it's only valid from
+Daniel's phone number. We want this to be able to be used by Daniel to order for our
+own stock."* So §33c stands except for three things:
+
+1. **Shipping is charged**: $95 standard / $235 expedited from China, $30 US — and the
+   free-over-$1000 rule is OFF for at-cost orders (`shipping_quote(free_threshold=False)`,
+   the only new switch, and the only thing it does). That rule is a customer perk keyed
+   to a retail subtotal; at cost it would fire on almost every order. The §33c "$0"
+   is reversed; do not reintroduce it.
+2. **Not single use.** `one_time: False`. Every order from the number is at cost, for as
+   long as the code exists in `core/deals.py`. Orders are still stamped `promo_code` so
+   they are identifiable in Airtable and reports as internal stock buys. `one_time` is
+   still honoured for any future code that sets it.
+3. **Locked to Daniel's phone** — `phones: ("+14806366814",)` (§28 has the number;
+   it must never go in `OPERATOR_NUMBERS`). `deals.phone_allowed()` compares the last
+   ten digits, so `whatsapp:+1…`, `(480) 636-6814` and the bare number all match and a
+   4-digit suffix does not. **The lock is checked at arming AND on every read**, so a
+   code pasted onto a stranger's `Leads.pricing_code` by hand still prices nothing.
+   Another number presenting the code gets a neutral *"let me check that code with my
+   manager"* — neither confirming nor denying the code exists — and ops get an email
+   naming the number, tagged `[CODE · WRONG PHONE]`.
+
+The lock, not single use, is now the guard on our cost sheet. A test asserts every
+`AT_COST_CODES` entry carries at least one phone, so an open code cannot be added by
+accident.
+
+**Adding a second internal buyer** (Jordan, Harrison) is one line: their number in
+`phones`. Adding a code for someone else is a new entry — keep it locked.
+
+Suite: **1246 passed, 6 skipped** (22 in `tests/test_deals.py`). Deployed by SHA — SUCCESS,
+`e2cd77f` running, `/health` 200.
