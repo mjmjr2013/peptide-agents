@@ -2526,3 +2526,5 @@ The nightly run fires at `DAILY_MANIFEST_HOUR=0` — just after midnight, report
 Recommended per §32: let ONE dry night email the statement, confirm it reads $215.17,
 THEN flip both switches. First real transfer is irreversible.
 
+
+**LIVE as of 2026-09-14 05:33 UTC.** Jordan set `PAYOUT_DRY_RUN=0` and `PAYOUT_STATEMENT_EMAIL=jason,jordan`; read back and confirmed, redeploy `a18074e` SUCCESS, `/health` 200. `PAYOUT_MAX_USD`/`PAYOUT_ASSET` unset → code defaults 3000/USDT (both correct). Statement CCs `MANIFEST_CC`=daniel@. First REAL payout fires tonight at `DAILY_MANIFEST_HOUR=0` — $215.17 to Jason for orders 5273/9174/978F. Verify on-chain after it runs: the send, the tx hash on each order, and the wallet balance drop.
