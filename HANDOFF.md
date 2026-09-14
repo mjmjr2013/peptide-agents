@@ -4,7 +4,11 @@ Paste this into a fresh Claude Code session (run from `~/peptide-agents`) to con
 It describes the live WhatsApp sales agent, the new order/payment/fulfillment system,
 how to deploy/debug, and what's outstanding. No secret tokens are stored here.
 
-**Last updated 2026-09-13. Read §33d FIRST — it is the newest.** §33d is USSTOCK26 as it now
+**Last updated 2026-09-14. Read §33f FIRST — it is the newest.** §33f is bug 1 fixed (a new order
+no longer fails an already-paid one, `4482937`). §33e is the incident that found it: Daniel's three
+at-cost orders all paid on-chain, none auto-confirmed (bug 2, split payments, still open).
+
+**(Earlier pointer, still valid) Read §33d FIRST — it is the newest.** §33d is USSTOCK26 as it now
 works (deployed `e2cd77f`): an at-cost code locked to Daniel's phone, reusable, normal flat
 shipping, through the ordinary order flow. §33c is the mechanism it refines; §33 the fixed basket it
 replaced, plus the group-chat readout; §33a–b are the Tron payout (Jason's address confirmed in
@@ -2479,3 +2483,27 @@ Note: the Orders table has **no `notes` field** (that is on Leads) — a `notes`
   split-paying customer. Fixing is Jordan's call; both touch money-matching.
 - The **1,485.38 USDT at 03:43** (30 min before Daniel started) matches no order —
   unexplained; possibly an earlier test or another sender. Worth tracing.
+
+### 33f. Bug 1 fixed and deployed `4482937` (2026-09-14)
+
+`_supersede_unless_paid` (agents/messaging_agent.py) replaces the bare
+"mark the prior awaiting order failed" at BOTH supersede sites (ordinary place
+path + deal path). It checks the chain via `_order_paid_onchain` first and:
+- **paid** → leaves it awaiting, alerts ops `[MULTI-ORDER]`; the watcher confirms
+  and notifies it normally;
+- **checked, unpaid** → supersedes as before (the renegotiation guard still works);
+- **check failed** → leaves it awaiting, alerts ops `[SUPERSEDE · unverifiable]` —
+  never risks failing a possibly-paid order.
+
+`_order_paid_onchain` passes the OTHER awaiting orders' amounts as `other_amounts`
+so a shared-address neighbour's payment can't be misread as this order's. Fails
+toward keeping money. Tests: `tests/test_supersede_paid_orders.py` (5). Deployed by
+SHA — SUCCESS, `4482937`, `/health` 200.
+
+**Daniel was notified** — one Lily-voice message (SID SM4afb…) confirming all three
+payments received and all three shipping with tracking in 1-3 days, listing each
+address. Sent freeform (he was inside the 24h window). His stage set to `fulfillment`.
+
+**Bug 2 (split payments never match) is still open** — Jordan chose "bug 1 first".
+The 1,485.38 USDT at 03:43 is still untraced.
+
