@@ -4,7 +4,11 @@ Paste this into a fresh Claude Code session (run from `~/peptide-agents`) to con
 It describes the live WhatsApp sales agent, the new order/payment/fulfillment system,
 how to deploy/debug, and what's outstanding. No secret tokens are stored here.
 
-**Last updated 2026-09-14. Read §33i FIRST — it is the newest.** §33i: sticker-factory vial-label
+**Last updated 2026-09-15. Read §33j FIRST — it is the newest.** §33j: the first live warehouse
+payout SUCCEEDED ($215.17); the later "failure" was the float drained by a manual 2,260 payment,
+failed closed with no stuck claims.
+
+**(Previous pointer) Read §33i** — §33i: sticker-factory vial-label
 email — manifest-style, sent for the 3 current orders and now auto-sending weekly (`09d9e4f`).
 §33h: TronGrid key in place + `pay_jason` manual tool. §33g: payout LIVE ($215.17 tonight). §33e/f:
 bug 1 fixed, bug 2 (split payments) still open.
@@ -2608,3 +2612,33 @@ Note: local `.env` has neither the Gmail creds nor `FACTORY_EMAIL` (both Railway
 so `--send` cannot run from the Mac — it must run where the creds are (Railway). That
 is why the immediate send went through the deployed route, not a local CLI call.
 Suite: **1256 passed, 6 skipped** (`tests/test_sticker_list.py`).
+
+## 33j. First live warehouse payout — it WORKED; the "failure" was a drained float (2026-09-15)
+
+**The first real payout succeeded.** 2026-09-14 at 06:03:30Z (midnight report TZ, so the
+report TZ is UTC-6): **$215.17 USDT to Jason**, tx `e4b5ac03bbed3c77a6e6448c3c2fc3ffb44bd900…`.
+All three USSTOCK26 orders carry that hash and `warehouse_fee_paid` — 5273 $22.65,
+9174 $36.64, 978F $155.88. §32 end to end, on live money.
+
+**Then the next night failed, and it was not a bug.** At 06:48Z — 45 minutes after the
+payout — Jordan sent **2,260 USDT from the payout wallet to Jason by hand** (confirmed
+his, 2026-09-15; it went to Jason's verified address, which is why it read as
+intentional rather than a compromise). That left **18.72 USDT**, so the 09-15 run could
+not cover what it owed and stopped.
+
+**It failed exactly the way it was designed to.** Nothing was sent, and — verified —
+**no stuck claims**: no order was left marked `warehouse_fee_paid` with a `claim:`
+token. The unpaid order simply rolled into the next run, which is the whole point of
+selecting by STATE rather than by date (§32). A date window would have dropped it
+silently.
+
+**The lesson worth keeping:** the hot wallet is a SMALL FLOAT for the nightly job
+(§32c — the balance IS the spending limit). Paying Jason a large amount by hand out of
+that same wallet drains the float and stalls the automation. Either top it back up
+immediately after any manual payment, or make large manual payments from somewhere
+else. A proactive low-balance alert (warn when the balance cannot cover the queue) was
+offered and is NOT built — the system only alerts AFTER a run fails.
+
+Status 2026-09-15: wallet **327.89 USDT + 390.91 TRX** (Jordan re-funded 309.17).
+Tonight owes **$50.87** — `6694` $26.63 (missed on the 15th) + `AE70` $24.24 (new).
+Covered.
