@@ -4,7 +4,13 @@ Paste this into a fresh Claude Code session (run from `~/peptide-agents`) to con
 It describes the live WhatsApp sales agent, the new order/payment/fulfillment system,
 how to deploy/debug, and what's outstanding. No secret tokens are stored here.
 
-**Last updated 2026-09-17. Read §34 FIRST — it is the newest.** §34: the QA loop is closed —
+**Last updated 2026-09-18. Read §35 FIRST — it is the newest.** §35: Tron float watch — an hour
+before and right after the nightly payout the float wallet is checked against what is owed plus a
+reserve; when short, Jordan gets ONE email with a pre-filled deBridge link (USDT Ethereum → Tron) and
+the amount to type. Nothing signs on Ethereum — he chose prepare-and-tap over a Phantom key on the
+server. Also: the QA loop's first real fix (§34 QA-1, coin-switch stall) shipped as `aed3dff`.
+
+**(Previous pointer) Read §34.** §34: the QA loop is closed —
 the transcript reviewer (rulebook rewritten; 3 of its last 4 alerts were false positives) now
 queues problems in Airtable `QA Issues`, a scheduled Claude Code session on the Mac diagnoses and
 fixes them on branches, Jordan approves with one tick, and the loop merges, tests, deploys and
@@ -2736,7 +2742,7 @@ Suite: **1282 passed, 6 skipped** (27 new across `test_transcript_reviewer.py`,
 `test_qa_notifier.py`, `test_qa_loop.py` — the last one drives the worktree logic against
 a throwaway repo).
 
-## 35. Tron float watch — prepare-and-tap top-ups via deBridge (2026-09-18) — see §35a for deploy
+## 35. Tron float watch — prepare-and-tap top-ups via deBridge (2026-09-18) — DEPLOYED `515a76e`
 
 Jordan: *"make an agent that checks the balances of the tron wallet to make sure there's
 enough money in there to send the payment to Jason. If there's not, the agent will pull
