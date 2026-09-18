@@ -110,6 +110,10 @@ class Settings:
 
     # The spending key. Absent => the payout runs but never broadcasts.
     payout_private_key: str = os.environ.get("PAYOUT_TRON_PRIVATE_KEY", "").strip()
+    # The float wallet's ADDRESS, for read-only balance checks where the key is
+    # deliberately absent (Jordan's Mac). Ignored when the key is set — the
+    # address is derived from it then. HANDOFF §35.
+    payout_tron_address: str = os.environ.get("PAYOUT_TRON_ADDRESS", "").strip()
 
     # DEFAULTS TO ON. While on, every path runs — batch, claim, statement, email —
     # and no funds move. Set PAYOUT_DRY_RUN=0 only after a dry night looks right.
@@ -131,6 +135,20 @@ class Settings:
     trongrid_api_key: str = os.environ.get("TRONGRID_API_KEY", "").strip()
     usdt_trc20_contract: str = os.environ.get(
         "USDT_TRC20_CONTRACT", "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t").strip()
+
+    # ── Tron float watch (HANDOFF §35) ────────────────────────────────────────
+    # The float wallet is funded BY HAND (§33b) — this only watches it. Before the
+    # nightly payout, and again right after it, the balance is compared with
+    # what is owed plus this reserve; when short, Jordan is emailed a pre-filled
+    # deBridge link to bridge USDT from Phantom (Ethereum) in one tap. No key
+    # for the Phantom wallet exists on this host, by his decision (2026-09-18).
+    tron_float_reserve_usd: float = float(os.environ.get("TRON_FLOAT_RESERVE_USD", "150"))
+    # A bridge costs ~$10 whatever the size, so never suggest a tiny one.
+    topup_min_usd: float = float(os.environ.get("TOPUP_MIN_USD", "200"))
+    # Below this the wallet cannot pay the energy for a USDT transfer.
+    tron_trx_floor: float = float(os.environ.get("TRON_TRX_FLOOR", "30"))
+    # Public JSON-RPC used only to READ the Phantom account's USDT/ETH balances.
+    eth_rpc_url: str = os.environ.get("ETH_RPC_URL", "https://ethereum-rpc.publicnode.com")
 
     # Where the payout statement is emailed. Jason gets it so he can check his own
     # pay; MANIFEST_CC is copied. Defaults to the warehouse address.

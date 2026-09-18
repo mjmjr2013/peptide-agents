@@ -2735,3 +2735,58 @@ procedure as a module (the browser User-Agent is still load-bearing).
 Suite: **1282 passed, 6 skipped** (27 new across `test_transcript_reviewer.py`,
 `test_qa_notifier.py`, `test_qa_loop.py` — the last one drives the worktree logic against
 a throwaway repo).
+
+## 35. Tron float watch — prepare-and-tap top-ups via deBridge (2026-09-18) — see §35a for deploy
+
+Jordan: *"make an agent that checks the balances of the tron wallet to make sure there's
+enough money in there to send the payment to Jason. If there's not, the agent will pull
+money from the Phantom wallet and send to Tron via debridge."* This is the proactive
+low-balance alert §33j said was NOT built, plus the top-up.
+
+**What was decided, and why it is not fully automatic.** Pulling from Phantom means
+signing with Phantom's Ethereum key — `ETH_ADDRESS` (`0xD1A3…`) is the address every
+customer pays USDT into (settings.py: "your Phantom ETH address receives it"). §32b and
+§33b already record the rule that the only spending key on this host controls a small
+float and nothing else, and that a nightly sweep from Phantom "was not wanted" (09-14).
+Two facts were put to Jordan: the Phantom account held **5.63 USDT and 0.0029 ETH** at
+the time (revenue is swept, so the exposure is whatever he parks there), and deBridge
+DLN does support Ethereum → Tron (live quote: 200 USDT sent → ~199.4 USDT arrives, ~$10
+cost + 0.001 ETH fixed fee + gas, fulfilled ~3 s after the Ethereum tx). Offered
+(A) fully automatic with `TOPUP_ETH_PRIVATE_KEY` in Railway and Phantom treated as a
+float, or (B) prepare-and-tap with no key on the server. **He chose (B).** So:
+
+- **`core/tron_payout.py` is still the only module that can spend.** Two READ-ONLY
+  helpers were added: `wallet_address()` (from the key, else new optional
+  `PAYOUT_TRON_ADDRESS`) and `read_balances()` (USDT + TRX, keyless).
+- **`core/debridge.py`** — DLN quote (`quote`), sizing (`size_topup`: smallest round
+  amount whose CONSERVATIVE arrival covers the shortfall — the API prepends ~$9 of
+  operating cost, and in the app the number you type is the total that leaves Phantom,
+  so sizing uses `usd_out_low`), and `app_link()` per deBridge's "Custom Linking" docs.
+  Chain ids are pinned: the API calls Tron `100000026`, the app URL calls it
+  `728126428` — verified in the browser that the app pre-fills chains, tokens and the
+  recipient (and shows the payout wallet's live balance); the amount only sticks once a
+  wallet is connected, so the email states it in words.
+- **`agents/treasury.py`** — `check_float(label)`: reads the float wallet, prices what
+  the next payout owes via new `warehouse_payout.owed_now()` (the same arithmetic
+  `preview()` uses), adds `TRON_FLOAT_RESERVE_USD` (default 150), sizes the top-up
+  (`TOPUP_MIN_USD` 200, $50 steps), reads Phantom's USDT/ETH over public JSON-RPC
+  (`ETH_RPC_URL`), and emails `operator_emails` ONE message: balances, owed, shortfall,
+  the link, the amount to type, the expected arrival, and warnings if Phantom lacks the
+  USDT or ETH for gas. TRX below `TRON_TRX_FLOOR` (30) gets its own line. A healthy
+  float is a log line, not an email. A wallet that cannot be READ is emailed as exactly
+  that — never treated as empty or as fine (§33j: missing warnings are the expensive
+  kind). Never raises into the scheduler.
+- **Scheduler (`main.py`)**: `pre` check at `DAILY_MANIFEST_HOUR − 1` (23:00 report TZ —
+  tonight's exact number, last call) and `post` check right after the payout (a day's
+  notice for a float the payout just drained).
+- Manual: `python3 -m agents.treasury` prints the check and sends nothing; `--send`
+  emails. Live on 2026-09-18 06:16Z: **150.02 USDT, 371.45 TRX, owed $0, need $150 →
+  ok.** No new Railway variables are required; all defaults are in settings.py.
+
+Tests: `tests/test_treasury.py` (18) — sizing never under-covers, the email wording,
+fail-loud paths. Suite **1302 passed, 6 skipped**.
+
+Not done, by decision: nothing signs on Ethereum. If Jordan later wants (A), the pieces
+are `eth-account` for signing, DLN `create-tx` with the recipient/authority params (it
+returns `tx: {to, data, value}`), and USDT's approve-to-zero-first quirk — and the key
+would make `0xD1A3…` spendable by this host on every EVM chain.

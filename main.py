@@ -48,6 +48,7 @@ def run_report_scheduler():
     tz = _report_tz()
     daily_hour = int(os.environ.get("DAILY_MANIFEST_HOUR", "7"))
     last_manifest_day = None
+    last_float_pre_day = None
     last_bulk_week = None
     last_canary_hour = None
     last_balance_day = None
@@ -59,6 +60,16 @@ def run_report_scheduler():
             now = datetime.now(tz)
             day = now.strftime("%Y-%m-%d")
             hour = now.strftime("%Y-%m-%d %H")
+            # Tron float watch, an hour BEFORE the payout: last call to top up
+            # (HANDOFF §35). Emails only when short; a healthy float is a log line.
+            if now.hour == (daily_hour - 1) % 24 and last_float_pre_day != day:
+                last_float_pre_day = day
+                try:
+                    from agents.treasury import run_float_check
+                    print(f"[Main/Treasury] pre-payout float check {day}:",
+                          {k: v for k, v in run_float_check("pre").items() if k != "body"})
+                except Exception as e:
+                    print(f"[Main/Treasury] pre check FAILED {day}: {e!r}")
             if now.hour == daily_hour and last_manifest_day != day:
                 print(f"[Main/Reports] daily manifest {day}:", run_daily_manifest())
                 last_manifest_day = day
@@ -75,6 +86,14 @@ def run_report_scheduler():
                           run_daily_warehouse_payout())
                 except Exception as e:
                     print(f"[Main/Payout] FAILED {day}: {e!r}")
+                # …and the float watch again right AFTER it, so a wallet the payout
+                # just drained is flagged with a day's notice, not an hour's (§35).
+                try:
+                    from agents.treasury import run_float_check
+                    print(f"[Main/Treasury] post-payout float check {day}:",
+                          {k: v for k, v in run_float_check("post").items() if k != "body"})
+                except Exception as e:
+                    print(f"[Main/Treasury] post check FAILED {day}: {e!r}")
             if now.weekday() == 6 and now.hour == 0 and last_bulk_week != day:  # Sunday 00:xx
                 print(f"[Main/Reports] weekly supplier bulk {day}:", run_supplier_bulk())
                 last_bulk_week = day

@@ -469,14 +469,21 @@ def _run_locked() -> dict:
             "skipped": len(batch["skipped"])}
 
 
+def owed_now() -> dict:
+    """The batch the next payout would pay, priced. Reads only. Shared by
+    `preview()` and the float watch (agents/treasury.py) so both answer "what
+    does tonight owe" with the same arithmetic."""
+    orders = airtable.get_orders_awaiting_warehouse_fee(settings.warehouse_fee_start_date)
+    return warehouse_fees.fee_for_batch(_rows_for(orders))
+
+
 def preview() -> dict:
     """What tonight WOULD pay. Reads only — claims nothing, sends nothing.
 
     Run this before flipping PAYOUT_DRY_RUN off:
         python3 -m agents.warehouse_payout preview
     """
-    orders = airtable.get_orders_awaiting_warehouse_fee(settings.warehouse_fee_start_date)
-    batch = warehouse_fees.fee_for_batch(_rows_for(orders))
+    batch = owed_now()
     try:
         stuck = [{"ref": r["fields"].get("order_ref", r["id"]),
                   "usd": r["fields"].get("warehouse_fee_usd")}

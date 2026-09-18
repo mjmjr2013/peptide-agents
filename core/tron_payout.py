@@ -85,6 +85,39 @@ def _client(private_key):
     return Tron(provider)
 
 
+def wallet_address() -> str:
+    """The float wallet's own address. Derived from the spending key when one is
+    configured, else PAYOUT_TRON_ADDRESS — so a machine with no key (a dry-run
+    Railway, Jordan's Mac) can still READ the balance for the float watch
+    (agents/treasury.py, HANDOFF §35). '' when neither is set."""
+    s = _cfg()
+    if s.payout_private_key:
+        try:
+            from tronpy.keys import PrivateKey
+            priv = PrivateKey(bytes.fromhex(s.payout_private_key.strip().removeprefix("0x")))
+            return priv.public_key.to_base58check_address()
+        except Exception:
+            pass
+    return (s.payout_tron_address or "").strip()
+
+
+def read_balances(address: str | None = None) -> dict:
+    """{'address', 'usdt', 'trx'} for the float wallet, read with NO key — a
+    balance lookup is public. Raises on any read failure: the callers are
+    alerting code that must say "could not read the wallet" rather than treat a
+    failed read as an empty wallet (or a full one)."""
+    s = _cfg()
+    address = (address or wallet_address()).strip()
+    if not valid_address(address):
+        raise PayoutError(f"no valid float wallet address to read ({address!r})")
+    client = _client(None)
+    trx = float(client.get_account_balance(address))
+    contract = client.get_contract(s.usdt_trc20_contract or _USDT_TRC20_MAINNET)
+    dec = contract.functions.decimals()
+    usdt = contract.functions.balanceOf(address) / (10 ** dec)
+    return {"address": address, "usdt": float(usdt), "trx": trx}
+
+
 def valid_address(addr: str) -> bool:
     """Tron base58check, checksum verified. `TXYZ...` typed by hand fails here."""
     try:
