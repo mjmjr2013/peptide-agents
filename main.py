@@ -91,6 +91,16 @@ def run_report_scheduler():
             if last_canary_hour != hour:
                 check_claude()
                 last_canary_hour = hour
+                # QA loop: email Jordan about QA Issues rows whose status moved
+                # (fix ready / deployed / false alarm / needs him). Hourly, on
+                # the canary beat; Gmail creds are only here (HANDOFF §34).
+                try:
+                    from agents.qa_notifier import notify_qa_transitions
+                    qn = notify_qa_transitions()
+                    if qn.get("sent"):
+                        print(f"[Main/QA] {qn}")
+                except Exception as e:
+                    print(f"[Main/QA] notifier FAILED: {e!r}")
             if last_balance_day != day:
                 check_twilio_balance()
                 from agents.health_monitor import check_airtable

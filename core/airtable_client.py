@@ -17,6 +17,7 @@ class AirtableClient:
     TABLE_LABS = "Labs"
     TABLE_CAMPAIGNS = "Campaigns"
     TABLE_MESSAGES = "Messages"
+    TABLE_QA = "QA Issues"
 
     def __init__(self):
         self.api = Api(settings.airtable_api_key)
@@ -49,6 +50,10 @@ class AirtableClient:
     def messages(self):
         return self.table(self.TABLE_MESSAGES)
 
+    @property
+    def qa_issues(self):
+        return self.table(self.TABLE_QA)
+
     # ── Messages (conversation transcript log) ──────────────────────────────
 
     def log_message(self, phone: str, direction: str, body: str,
@@ -69,6 +74,65 @@ class AirtableClient:
             self.messages.create(fields)
         except Exception as e:
             print(f"[airtable] log_message failed: {e!r}")
+
+    # ── QA Issues (the reviewer → fixer queue, HANDOFF §34) ─────────────────
+    # One row per problem conversation the transcript reviewer flagged. The
+    # reviewer (Railway) writes it; the fixer loop (Claude Code on the Mac,
+    # tools/qa_loop.py) works it and writes the outcome back; the notifier
+    # (Railway, hourly) emails Jordan on every status change. Airtable is the
+    # only channel between the three — no other shared state.
+    QA_OPEN_STATUSES = ("open", "in_progress", "pr_open", "needs_jordan", "deploy_failed")
+
+    def find_open_qa_issue_for_phone(self, phone: str) -> dict | None:
+        """The live row for this phone, if the reviewer already queued one that
+        nobody has closed. Keeps one thread → one row across 6-hourly runs."""
+        clauses = ",".join(f"{{status}}='{s}'" for s in self.QA_OPEN_STATUSES)
+        rows = self.qa_issues.all(formula=f"AND({{phone}}='{phone}', OR({clauses}))")
+        rows.sort(key=lambda r: r["fields"].get("flagged_at", ""), reverse=True)
+        return rows[0] if rows else None
+
+    def queue_qa_issue(self, phone: str, severity: str, summary: str, issues: list[dict],
+                       transcript: str, suspected_cause: str = "",
+                       now_iso: str | None = None) -> tuple[dict, bool]:
+        """Create the row for a flagged thread, or refresh the open one for the
+        same phone. Returns (record, created). `created` is False when an open
+        row was updated instead — the caller uses that to send ONE alert email
+        per problem, not one per reviewer pass."""
+        import json
+        from datetime import datetime, timezone
+        now_iso = now_iso or datetime.now(timezone.utc).isoformat()
+        existing = self.find_open_qa_issue_for_phone(phone)
+        payload = {
+            "severity": severity,
+            "summary": (summary or "")[:5000],
+            "issues": json.dumps(issues, ensure_ascii=False, indent=1)[:90000],
+            "transcript": (transcript or "")[:90000],
+            "suspected_cause": (suspected_cause or "")[:5000],
+            "last_seen_at": now_iso,
+        }
+        if existing:
+            payload["runs"] = int(existing["fields"].get("runs") or 1) + 1
+            return self.qa_issues.update(existing["id"], payload), False
+        payload.update({"phone": phone, "status": "open", "flagged_at": now_iso, "runs": 1})
+        return self.qa_issues.create(payload), True
+
+    def get_qa_issues(self, statuses: tuple[str, ...] | None = None) -> list[dict]:
+        """Rows in the given statuses (default: every open one), oldest first."""
+        statuses = statuses or self.QA_OPEN_STATUSES
+        clauses = ",".join(f"{{status}}='{s}'" for s in statuses)
+        rows = self.qa_issues.all(formula=f"OR({clauses})")
+        rows.sort(key=lambda r: r["fields"].get("flagged_at", ""))
+        return rows
+
+    def get_qa_issues_to_notify(self) -> list[dict]:
+        """Rows whose status moved since Jordan was last emailed about them."""
+        rows = self.qa_issues.all(formula="{status}!={notified_status}")
+        rows.sort(key=lambda r: r["fields"].get("flagged_at", ""))
+        return rows
+
+    def update_qa_issue(self, record_id: str, **fields) -> dict:
+        return self.qa_issues.update(record_id, fields)
+
 
     # ── Leads ──────────────────────────────────────────────────────────────
 

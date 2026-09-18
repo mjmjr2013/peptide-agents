@@ -4,7 +4,13 @@ Paste this into a fresh Claude Code session (run from `~/peptide-agents`) to con
 It describes the live WhatsApp sales agent, the new order/payment/fulfillment system,
 how to deploy/debug, and what's outstanding. No secret tokens are stored here.
 
-**Last updated 2026-09-15. Read §33j FIRST — it is the newest.** §33j: the first live warehouse
+**Last updated 2026-09-17. Read §34 FIRST — it is the newest.** §34: the QA loop is closed —
+the transcript reviewer (rulebook rewritten; 3 of its last 4 alerts were false positives) now
+queues problems in Airtable `QA Issues`, a scheduled Claude Code session on the Mac diagnoses and
+fixes them on branches, Jordan approves with one tick, and the loop merges, tests, deploys and
+confirms. First real item: the USDT→BTC coin-switch stall of 2026-09-17.
+
+**(Previous pointer) Read §33j** — §33j: the first live warehouse
 payout SUCCEEDED ($215.17); the later "failure" was the float drained by a manual 2,260 payment,
 failed closed with no stuck claims.
 
@@ -2642,3 +2648,90 @@ offered and is NOT built — the system only alerts AFTER a run fails.
 Status 2026-09-15: wallet **327.89 USDT + 390.91 TRX** (Jordan re-funded 309.17).
 Tonight owes **$50.87** — `6694` $26.63 (missed on the 15th) + `AE70` $24.24 (new).
 Covered.
+
+## 34. The QA loop closes: reviewer → Airtable queue → fixer session → PR → deploy (2026-09-17)
+
+Jordan: the transcript reviewer's alert emails (HIGH / MEDIUM) are useful, but he wants
+the agent to **feed the problem back to Claude so it gets fixed automatically** — a
+self-improving system — instead of only reporting to him.
+
+**What the alerts were actually worth, first.** Railway logs for 09-15 → 09-17 show four
+flagged threads. Three were FALSE POSITIVES caused by the reviewer's own rulebook being
+stale: it still told the judge Lily had 5/10/15 % discount authority and should escalate
+big orders to "my boss" (both removed in §31), knew only the China shipping schedule
+(the US warehouse is $30 flat, no free threshold), and knew nothing about at-cost codes
+— so Daniel's USSTOCK26 orders (§33d) were flagged HIGH twice as "85 % below catalog".
+The fourth (`+1801…7102`, 09-17 13:24Z) is REAL: a customer with a $275 USDT order
+pending asked to switch to BTC, said "yes send me address to send", and
+`_is_payment_ping` routed that to the verification branch — which only verifies, never
+re-sends instructions — so they got "finance doesn't see it yet" twice and left. A judge
+with stale rules feeding an automatic fixer would have "fixed" correct behaviour, so the
+rulebook was rewritten first (see below) and the fixer is allowed to edit the judge.
+
+**The loop, in three parts. Airtable is the only channel between them.**
+
+1. **Reviewer (Railway, every 6 h, `agents/transcript_reviewer.py`).** Rulebook now
+   matches messaging_agent.py: fixed prices, no discount / escalation, BOTH catalogs
+   (`get_catalog_text` for China and US), BOTH shipping schedules read from
+   `core.shipping` constants, the payment flow (system sends amount+address; a coin
+   switch or "send the address again" must get fresh instructions — answering it with
+   "checking with finance" is HIGH; the post-"I paid" finance beat is NOT a stall), and an
+   `_at_cost_note(phone)` that tells the judge when a phone holds an at-cost code
+   (`core.deals.AT_COST_CODES`). The verdict gained `suspected_cause`. Every flagged
+   thread is written to **Airtable `QA Issues`** by `airtable.queue_qa_issue()` —
+   ONE row per phone while it is live (`QA_OPEN_STATUSES`): a re-flag refreshes the row
+   and bumps `runs`, and Jordan is emailed only for NEW rows. Queue failure never loses
+   the email (`queue_flagged` returns unqueued verdicts as alerts).
+   `tests/test_transcript_reviewer.py` pins all of it.
+
+2. **Fixer (Claude Code on Jordan's Mac, scheduled task `northline-qa-fixer`, every 3 h at
+   :45 — `~/.claude/scheduled-tasks/northline-qa-fixer/SKILL.md` holds the brief).** A
+   fresh session runs `python3 tools/qa_loop.py` — `deploy-check`, `list`, `show`, then
+   per row `start` (isolated worktree `~/peptide-agents-qa/qa-<n>` on branch
+   `qa/<n>-<slug>` off origin/main, `.env` copied in), fix + regression test, `finish`
+   (full suite must be green → push → PR via GitHub API using the PAT already in the
+   remote URL → status `pr_open`), or `resolve` as `false_positive` / `needs_jordan` /
+   `wont_fix`. It never touches the main checkout (other sessions leave uncommitted work
+   there — the sticker-PDF layout change was sitting there when this was built), never
+   deploys, never edits prices, price sheets, the baseline, crypto_verify, or HANDOFF.md.
+   Runs only while the desktop app is open (a missed slot runs at next launch).
+
+3. **Gate + deploy.** `deploy-check` (start of every fixer run): a `pr_open` row that
+   Jordan `approve`d in Airtable is squash-merged by API (a manual Merge on GitHub works
+   too; a PR closed unmerged → `wont_fix`); if origin/main moved, the suite runs again on
+   a detached worktree of main, then `tools/railway_deploy.py` force-deploys by SHA and
+   CONFIRMS the running commit (§10); rows go `fixed` with `fix_commit`, worktrees and
+   branches are deleted. Tests red on main or a Railway failure → `deploy_failed`,
+   retried every run. **Self-approval:** a diff confined to
+   `agents/transcript_reviewer.py` + its test (`SELF_APPROVE_FILES`) sets `approve`
+   itself — the judge improving is not customer-facing. Everything else waits for
+   Jordan's tick. That gate is deliberate on a live-money system whose judge had just
+   produced three false positives; it is one checkbox for him and one line to remove.
+
+**Notifier (Railway, hourly on the canary beat, `agents/qa_notifier.py`).** The Mac has
+no Gmail creds (§33i), so the fixer only writes the row; Railway emails Jordan when
+`status != notified_status` — fix ready (with the approve instructions), deployed, false
+alarm, needs your decision (he answers in `jordan_notes` and sets status back to `open`),
+closed, deploy problem — and marks the row only after Gmail accepted, so a hiccup
+retries next hour. `open` / `in_progress` are silent (the alert already went).
+
+**`QA Issues` schema** (`tools/create_qa_table.py`, idempotent): `qa_id` autoNumber,
+`phone`, `status` (open · in_progress · pr_open · fixed · false_positive · needs_jordan ·
+wont_fix · deploy_failed — all declared up front because the PAT cannot add options
+later), `severity`, `summary`, `suspected_cause`, `issues` (JSON), `transcript` (exactly
+what the judge saw), `flagged_at`, `last_seen_at`, `runs`, `fix_notes` (what Jordan is
+emailed), `jordan_notes`, `branch`, `pr_url`, `fix_commit`, `approve`, `notified_status`,
+`resolved_at`.
+
+**HANDOFF and the loop.** Fixer merges land on main without a HANDOFF entry (two open
+branches appending here would conflict at merge). The record of each fix is its PR body
+and the row's `fix_notes`. When the drift hook says commits landed since this file moved,
+summarise the `fixed` rows since the last section — do not treat a `qa/` merge as
+undocumented work.
+
+**Also extracted:** `tools/railway_deploy.py` — `status` / `deploy <sha>` — the §10
+procedure as a module (the browser User-Agent is still load-bearing).
+
+Suite: **1282 passed, 6 skipped** (27 new across `test_transcript_reviewer.py`,
+`test_qa_notifier.py`, `test_qa_loop.py` — the last one drives the worktree logic against
+a throwaway repo).
