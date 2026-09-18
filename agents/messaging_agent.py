@@ -1146,25 +1146,46 @@ def _is_price_list_request(body: str) -> bool:
     return normalized in _PRICE_LIST_PHRASES
 
 
-def _is_payment_ping(body: str) -> bool:
+def _is_payment_ping(body: str, history: list[dict] | None = None) -> bool:
     """While awaiting payment: is this message about the payment itself, or is the
     customer still negotiating / asking something else? Tiny Claude classification;
-    on any doubt or error, treat as a payment ping (the old, safe behavior)."""
+    on any doubt or error, treat as a payment ping (the old, safe behavior).
+
+    `history` (recent conversation turns, most-recent-last) is passed so the
+    classifier can see WHY a short reply like "yes send me the address" was said —
+    without it, that message is indistinguishable from a real payment ping, and if
+    it actually followed Lily proposing a coin switch it got misrouted into the
+    "checking with finance" verify branch with nothing paid yet (2026-09-17
+    incident, HANDOFF §34 QA-1)."""
     text = (body or "").strip()
     if not text:
         return True
+    context = ""
+    if history:
+        lines = []
+        for turn in history[-6:]:
+            content = turn.get("content")
+            if not isinstance(content, str):
+                continue
+            speaker = "Lily" if turn.get("role") == "assistant" else "Customer"
+            lines.append(f"{speaker}: {content}")
+        if lines:
+            context = "Recent conversation, oldest first:\n" + "\n".join(lines) + "\n\n"
     try:
         r = claude.create(
-            system=("A customer was just given crypto payment instructions for their order. "
-                    "Classify their next message. Reply with exactly one word:\n"
+            system=("A customer was given crypto payment instructions for their order. "
+                    "Using the recent conversation for context, classify their NEWEST message. "
+                    "Reply with exactly one word:\n"
                     "PAYMENT — they say they ALREADY sent the payment, ask you to check/verify/"
-                    "confirm it, report trouble completing it, or ask for the wallet address or "
-                    "exact amount again.\n"
+                    "confirm it, report trouble completing it, or ask again for the SAME coin's "
+                    "wallet address or exact amount.\n"
                     "OTHER — anything else: price negotiation or discount requests, changing or "
                     "cancelling the order, saying they WILL send or are about to send (often after "
                     "renegotiating — the deal may have changed), agreeing to a price, product or "
-                    "shipping questions, small talk."),
-            messages=[{"role": "user", "content": text}],
+                    "shipping questions, small talk, OR agreeing to switch payment coin / asking "
+                    "for a DIFFERENT coin's address after Lily offered or confirmed a coin switch "
+                    "(nothing has been paid yet — fresh instructions in the new coin are needed)."),
+            messages=[{"role": "user", "content": f"{context}Newest message: {text}"}],
             max_tokens=64)
         out = _extract_text(r).strip().upper()
         return not out.startswith("OTHER")
@@ -1647,7 +1668,7 @@ def handle_inbound(from_phone: str, body: str, name: str = "", media: list | Non
     # (2026-08-01 incident: 4 discount asks all answered with "checking with finance").
     if stage == "awaiting_payment":
         pend = _pending_payments.get(from_phone)
-        if pend and not _is_payment_ping(body):
+        if pend and not _is_payment_ping(body, conversation):
             # Not about the payment — let Lily actually read and answer it. Stage
             # stays awaiting_payment (a real payment ping later still verifies);
             # if they renegotiate, a fresh 'place' supersedes the old order.
