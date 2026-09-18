@@ -2715,7 +2715,7 @@ alarm, needs your decision (he answers in `jordan_notes` and sets status back to
 closed, deploy problem — and marks the row only after Gmail accepted, so a hiccup
 retries next hour. `open` / `in_progress` are silent (the alert already went).
 
-**`QA Issues` schema** (`tools/create_qa_table.py`, idempotent): `qa_id` autoNumber,
+**`QA Issues` schema** (table `tblBpfC3RNAL9f94S`, created 2026-09-17 by `tools/create_qa_table.py`, idempotent): `qa_id` autoNumber,
 `phone`, `status` (open · in_progress · pr_open · fixed · false_positive · needs_jordan ·
 wont_fix · deploy_failed — all declared up front because the PAT cannot add options
 later), `severity`, `summary`, `suspected_cause`, `issues` (JSON), `transcript` (exactly
